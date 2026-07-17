@@ -1,0 +1,14 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "boopiter"
+  site-url: "https://drscotthawley.github.io/boopiter"
+  description: "boop-iter notebook LLM workflow. cells are boops, iter-atively keeping the human in the loop"
+  repo-branch: main
+  repo-url: "https://github.com/drscotthawley/boopiter"
+
+format-links:
+  - html
+  - format: commonmark
+    text: Markdown

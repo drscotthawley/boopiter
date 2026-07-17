@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boopiter"
+dynamic = ["version"]
+description = "boop-iter notebook LLM workflow. cells are boops, iter-atively keeping the human in the loop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Scott H. Hawley", email = "scott.hawley@belmont.edu"}]
+keywords = ['nbdev']
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/drscotthawley/boopiter"
+Documentation = "https://drscotthawley.github.io/boopiter/"
+
+[project.entry-points.nbdev]
+boopiter = "boopiter._modidx:d"
+
+[tool.setuptools.dynamic]
+version = {attr = "boopiter.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["boopiter"]
+
+[tool.nbdev]
