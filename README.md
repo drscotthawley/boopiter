@@ -2,6 +2,8 @@
 
 > boop-iter notebook LLM workflow. cells are boops, iter-atively keeping the human in the loop
 
+> boop-iter notebook LLM workflow. cells are boops, iter-atively keeping the human in the loop
+
 This is a vibe-coded clone of the [solveit](https://solve.it.com/) GUI, So I can easily work with local execution and add whatever features I want. –S.H.H
 
 ## Developer Guide
@@ -53,4 +55,4 @@ You can also aunch and pre-load a notebook:
 
 ## Screenshot
 
-![screenshot](images/screenshot.png)
+![screenshot](https://github.com/drscotthawley/boopiter/blob/main/images/screenshot.png?raw=true)
