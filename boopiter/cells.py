@@ -520,7 +520,7 @@ def boopiter_ping():
 
 @rt('/logo.png')
 def logo_png():
-    return FileResponse(Path(__file__).parent/'logo.png')
+    return FileResponse(Path(__file__).parent.parent/'images/logo.png')
 
 @rt
 def index():
