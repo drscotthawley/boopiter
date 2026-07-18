@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = []
+dependencies = ["nbdev","jupyter","python-fasthtml","toolslm","dialoghelper","uvicorn"]
 
 [project.urls]
 Repository = "https://github.com/drscotthawley/boopiter"
@@ -29,5 +29,8 @@ version = {attr = "boopiter.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["boopiter"]
+
+[project.scripts]
+boopiter = "boopiter.core:launch"
 
 [tool.nbdev]
