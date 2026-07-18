@@ -29,7 +29,7 @@ from datetime import datetime
 import nbformat as _nbf
 from lisette import *
 
-# %% ../nbs/01_cells.ipynb #7a90618d
+# %% ../nbs/01_cells.ipynb #4129e245
 # Jupyter-style command-mode hotkeys. Fire only when no textarea/input is focused;
 # each maps to an htmx POST that re-renders #notebook.
 _HOTKEYS_JS = r"""
@@ -97,6 +97,7 @@ _HOTKEYS_JS = r"""
 })();
 """
 
+# %% ../nbs/01_cells.ipynb #21f7aaec
 # Tailwind's reset flattens markdown headings/lists; restore them for `.marked` content.
 _MARKED_CSS = """
 .marked h1{font-size:1.6rem;font-weight:700;margin:.4em 0}
@@ -118,6 +119,7 @@ _MARKED_CSS = """
 .CodeMirror-scroll{max-height:60vh}
 """
 
+# %% ../nbs/01_cells.ipynb #cffa85cc
 _EDIT_JS = r"""
 function boopSave(id){
   var cm = window['_boopcm_'+id];
@@ -230,6 +232,7 @@ function boopInitEditors(root){
 if(window.htmx) htmx.onLoad(boopInitEditors);
 """
 
+# %% ../nbs/01_cells.ipynb #e6f30d15
 _THEME_JS = r"""
 window._boopcms = window._boopcms || [];
 var _HLJS = {
@@ -255,12 +258,15 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 """
 
+# %% ../nbs/01_cells.ipynb #2537404a
 def _tw_header():
-    "Use the precompiled static Tailwind build (from `_build_tailwind()`) if it exists; else fall back to the slower CDN JIT compiler."
-    compiled = Path(__file__).parent/'static/tailwind.css'
+    "Use the precompiled static Tailwind build (from `_build_tailwind()`) if it exists; else fall back to the slower CDN JIT compiler. `__file__` isn't defined when nbdev-test executes this notebook directly (vs. a real module import), so fall back to cwd -- the .exists() check below fails safely either way."
+    pkg_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+    compiled = pkg_dir/'static/tailwind.css'
     if compiled.exists(): return Link(rel='stylesheet', href='/tailwind.css')
     return Script(src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4')
 
+# %% ../nbs/01_cells.ipynb #137abff0
 _MARKDOWN_JS = r"""
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 import katex from "https://cdn.jsdelivr.net/npm/katex/dist/katex.mjs";
@@ -291,6 +297,7 @@ proc_htmx('.marked:not([data-md-done])', e => {
 });
 """
 
+# %% ../nbs/01_cells.ipynb #cec880e0
 daisy_hdrs = [
     Link(href='https://cdn.jsdelivr.net/npm/daisyui@5', rel='stylesheet', type='text/css'),
     _tw_header(),
@@ -313,7 +320,6 @@ daisy_hdrs = [
     Script(_HOTKEYS_JS),
     Script(_EDIT_JS),
 ]
-
 
 # %% ../nbs/01_cells.ipynb #c44aa370
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
