@@ -17,7 +17,7 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell',
            'save_cell', 'sync_cell']
 
-# %% ../nbs/01_cells.ipynb #ad4df3b8
+# %% ../nbs/01_cells.ipynb #b46f85fe
 import os, shutil, subprocess, sys, threading, time
 from fastcore.utils import *
 from fasthtml.common import *
@@ -29,7 +29,7 @@ from datetime import datetime
 import nbformat as _nbf
 from lisette import *
 
-# %% ../nbs/01_cells.ipynb #a1cf4ea1
+# %% ../nbs/01_cells.ipynb #7a90618d
 # Jupyter-style command-mode hotkeys. Fire only when no textarea/input is focused;
 # each maps to an htmx POST that re-renders #notebook.
 _HOTKEYS_JS = r"""
@@ -315,12 +315,12 @@ daisy_hdrs = [
 ]
 
 
-# %% ../nbs/01_cells.ipynb #dffe631a
+# %% ../nbs/01_cells.ipynb #c44aa370
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
 rt  = app.route
 p   = partial(HTMX, app=app, host=None, port=None)
 
-# %% ../nbs/01_cells.ipynb #f17bb8ea
+# %% ../nbs/01_cells.ipynb #9ff1ab3d
 _shell = get_shell()
 _shell.system = _shell.system_piped   # capture `!cmd` output into stdout
 
@@ -333,7 +333,7 @@ def run_code(src):
     if res.result is not None: return res.result
     return (res.stdout or '').replace('\r\n', '\n')
 
-# %% ../nbs/01_cells.ipynb #f436e976
+# %% ../nbs/01_cells.ipynb #7bab4f59
 CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is generated
 
 class Cell:
@@ -344,7 +344,7 @@ class Cell:
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
 
-# %% ../nbs/01_cells.ipynb #1dcfc23d
+# %% ../nbs/01_cells.ipynb #e811ad03
 class Notebook:
     def __init__(self):
         self.cells, self._nid, self.compose_type, self.selected = [], 0, 'code', None
@@ -443,7 +443,7 @@ nb = Notebook()
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
 
-# %% ../nbs/01_cells.ipynb #b608303e
+# %% ../nbs/01_cells.ipynb #1ab8ac40
 def get_model_list(debug:bool=False): 
     "Get a list of supported (local) models"
     import httpx
@@ -453,7 +453,7 @@ def get_model_list(debug:bool=False):
         raise RuntimeError("No local LLM models found -- is Ollama running, and do you have any models pulled?")
     return ['ollama/'+m['model'] for m in models['models']]
 
-# %% ../nbs/01_cells.ipynb #4613d27b
+# %% ../nbs/01_cells.ipynb #1ddcd8c6
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
 # triggers a bug in litellm's MCP-handler codepath that returns a raw dict instead of a proper
 # response object (AttributeError: 'dict' object has no attribute 'choices'). Same issue hit by
@@ -478,7 +478,7 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools=[]):
     return contents(response).content
 
 
-# %% ../nbs/01_cells.ipynb #c60dcd1c
+# %% ../nbs/01_cells.ipynb #673e6cf5
 def llm_context(nb, cur_id=None):
     "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order."
     cutoff = len(nb.cells)
@@ -487,7 +487,7 @@ def llm_context(nb, cur_id=None):
         if i is not None: cutoff = i + 1
     return '\n'.join(f'[{c.ctype}] {c.source}' for c in nb.cells[:cutoff] if c.visible)
 
-# %% ../nbs/01_cells.ipynb #9b2a1120
+# %% ../nbs/01_cells.ipynb #91ae9a62
 def stub_reply(nb, prompt):
     "fake/placeholder reply in case llms aren't available (can still test gui)"
     n = sum(c.visible for c in nb.cells)
@@ -495,7 +495,7 @@ def stub_reply(nb, prompt):
     return (f'(stub) I can see {n} visible cell(s). You said: '
             f'"{prompt.strip()}". Wire a real model into stub_reply() later.')
 
-# %% ../nbs/01_cells.ipynb #74783b6a
+# %% ../nbs/01_cells.ipynb #f3f95353
 _PREFERRED_MODEL_SUBSTR = 'qwen2.5-coder'  # used if present, regardless of exact tag/version
 
 def ensure_models():
@@ -514,7 +514,7 @@ try:
 except: 
     print("WARNING: Can't test this cell in notebook, no app")
 
-# %% ../nbs/01_cells.ipynb #fde4a2d6
+# %% ../nbs/01_cells.ipynb #733695eb
 BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
           'prompt':'border-error', 'assistant':'border-error'}
 
@@ -564,7 +564,7 @@ def _set_export(source, flag):
     return f'#| export\n{stripped}' if flag else stripped
 
 
-# %% ../nbs/01_cells.ipynb #66ba7abd
+# %% ../nbs/01_cells.ipynb #40ab4455
 def cell_toolbar(c):
     tgt = '#notebook'
     copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
@@ -591,7 +591,7 @@ def cell_toolbar(c):
     return Div(*btns, cls='flex gap-1 ml-auto')
 
 
-# %% ../nbs/01_cells.ipynb #5dfcd325
+# %% ../nbs/01_cells.ipynb #f8a2d4b4
 def type_dropdown(c):
     "Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell."
     if c.ctype == 'assistant':
@@ -665,7 +665,7 @@ def render_cell_edit(c):
 def render_nb():
     return Div(*[render_cell(c) for c in nb.cells], id='notebook', cls='flex flex-col')
 
-# %% ../nbs/01_cells.ipynb #be406539
+# %% ../nbs/01_cells.ipynb #45ec3104
 def composer(draft='', oob=False):
     tabs = [fh.A(t.capitalize(),
                  cls=f'tab {"tab-active" if nb.compose_type==t else ""}',
@@ -687,7 +687,7 @@ def composer(draft='', oob=False):
 def render_app(draft=''):
     return Div(render_nb(), composer(draft), id='app')
 
-# %% ../nbs/01_cells.ipynb #f8ed3da1
+# %% ../nbs/01_cells.ipynb #7fbcdfd9
 # ---- top menu / control bar ----
 def theme_swap():
     "DaisyUI sun/moon swap; drives boopApplyTheme (default dark)."
@@ -1034,7 +1034,7 @@ def move_cell(id:int, delta:int):
     return render_nb()
 
 
-# %% ../nbs/01_cells.ipynb #2e799b38
+# %% ../nbs/01_cells.ipynb #14258130
 # --- command-mode (hotkey) routes ---
 @rt
 def select(id:int):
