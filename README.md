@@ -5,7 +5,7 @@
 
 > boop-iter notebook LLM workflow. cells are boops, iter-atively keeping the human in the loop
 
-This is a vibe-coded clone of the [solveit](https://solve.it.com/) GUI, So I can easily work with local execution and add whatever features I want. –S.H.H
+This is a vibe-coded clone of and homage to the amazing [solveit](https://solve.it.com/) GUI, intended primarily for education purposes: learning the basic operations so that I can easily work with local execution and develop my own extensions and features as my research work expands.
 
 ## Developer Guide
 

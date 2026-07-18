@@ -15,7 +15,17 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = ["nbdev","jupyter","python-fasthtml","toolslm","dialoghelper","uvicorn","lisette","httpx","pytailwindcss"]
+dependencies = [
+    "nbdev",
+    "jupyter",
+    "python-fasthtml",
+    "toolslm",
+    "dialoghelper",
+    "uvicorn",
+    "lisette",
+    "httpx",
+    "pytailwindcss",
+]
 
 [project.urls]
 Repository = "https://github.com/drscotthawley/boopiter"
