@@ -151,3 +151,12 @@ checklink/cookies.txt
 # Quarto
 .quarto
 .boopiter.pid
+
+# local dev/session artifacts -- not part of the package
+.sesskey
+nohup.out
+/agent-loop
+test_qwen.py
+
+# generated at launch by _build_tailwind() -- boopiter/static/tw_input.css is the tracked source
+boopiter/static/tailwind.css

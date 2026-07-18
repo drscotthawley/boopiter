@@ -9,6 +9,7 @@ __all__ = ['launch']
 
 # %% ../nbs/00_core.ipynb #da4d26dd
 import subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
 from typing import Annotated
 from fastcore.script import call_parse
 
@@ -33,6 +34,18 @@ def _kill_port(port):
     for pid in pids: subprocess.run(['kill', '-9', pid])
     if pids: time.sleep(0.3)
 
+def _build_tailwind():
+    "Precompile a static Tailwind CSS file once per launch, replacing the CDN's in-browser JIT compiler (which recompiles on every htmx DOM update -- a major source of per-interaction lag)."
+    pkg_dir = Path(__file__).parent
+    inp, out = pkg_dir/'static/tw_input.css', pkg_dir/'static/tailwind.css'
+    venv_bin = Path(sys.executable).parent/'tailwindcss'  # pytailwindcss installs its binary alongside python, not necessarily on PATH
+    exe = str(venv_bin) if venv_bin.exists() else 'tailwindcss'
+    try:
+        subprocess.run([exe, '-i', str(inp), '-o', str(out), '--minify', '--cwd', str(pkg_dir)],
+                       capture_output=True, timeout=60, check=True)
+    except Exception as e:
+        print(f"Tailwind precompile failed ({e}); falling back to the slower CDN JIT build.", file=sys.stderr)
+
 @call_parse
 def launch(
     nbfile: Annotated[str, {'opt': False, 'nargs': '?'}] = None,  # .ipynb file to load on startup
@@ -46,6 +59,7 @@ def launch(
     if owner == 'boopiter':
         print(f"Killing previous boopiter instance on port {port}...")
         _kill_port(port)
+    _build_tailwind()
     if nbfile:
         from . import cells as _cells
         try:
@@ -55,3 +69,4 @@ def launch(
             sys.exit(1)
     import uvicorn
     uvicorn.run('boopiter.cells:app', host='0.0.0.0', port=port)
+
