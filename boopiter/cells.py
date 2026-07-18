@@ -11,12 +11,14 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
            'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'file_browser_modal', 'top_bar',
            'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook',
-           'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell',
-           'pending_cell', 'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'run_cell', 'toggle_vis',
-           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected',
-           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell']
+           'restart_server', 'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type',
+           'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'run_cell',
+           'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'del_selected',
+           'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell',
+           'save_cell', 'sync_cell']
 
-# %% ../nbs/01_cells.ipynb #fc14721e
+# %% ../nbs/01_cells.ipynb #ad4df3b8
+import os, shutil, subprocess, sys, threading, time
 from fastcore.utils import *
 from fasthtml.common import *
 from fasthtml.jupyter import *
@@ -27,7 +29,7 @@ from datetime import datetime
 import nbformat as _nbf
 from lisette import *
 
-# %% ../nbs/01_cells.ipynb #55955fc2
+# %% ../nbs/01_cells.ipynb #a1cf4ea1
 # Jupyter-style command-mode hotkeys. Fire only when no textarea/input is focused;
 # each maps to an htmx POST that re-renders #notebook.
 _HOTKEYS_JS = r"""
@@ -80,7 +82,7 @@ _HOTKEYS_JS = r"""
       case 'm': act('/settype_selected?t=note'); break;
       case 'y': act('/settype_selected?t=code'); break;
       case 'r': act('/settype_selected?t=raw');  break;
-      case 's': htmx.ajax('POST', '/save_now', {swap:'none'}); break;
+      case 's': boopSaveNotebook(); break;
       case 'x': act('/cut_selected'); break;
       case 'c': htmx.ajax('POST', '/copy_selected', {swap:'none'}); break;
       case 'v': act('/paste_selected'); break;
@@ -129,6 +131,38 @@ function boopComposerSubmit(){
   var cm = window._boopComposerCM;
   if(cm && cm.getWrapperElement && cm.getWrapperElement().isConnected) cm.save();
   if(ta && ta.form) ta.form.requestSubmit();
+}
+function boopRestartServer(){
+  if(!confirm('Restart boopiter? Unsaved notebook changes will be lost -- Save first if you want to keep them.')) return;
+  fetch('/restart_server', {method:'POST'}).catch(function(){});
+  var tries = 0;
+  var poll = setInterval(function(){
+    tries++;
+    fetch('/_boopiter_ping').then(function(r){ if(r.ok){ clearInterval(poll); location.reload(); } }).catch(function(){});
+    if(tries > 60) clearInterval(poll);  // ~30s safety timeout
+  }, 500);
+}
+function boopSyncAllEditors(){
+  // Flush every currently-open editor's text to the server (no execution) before Save writes to disk --
+  // otherwise an edit that was never Shift-Entered would silently vanish, unlike real Jupyter's WYSIWYG save.
+  var jobs = [];
+  (window._boopcms || []).forEach(function(cm){
+    cm.save();
+    var id = cm.getTextArea().getAttribute('data-cid');
+    if(id) jobs.push(fetch('/sync_cell?id='+id, {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'source='+encodeURIComponent(cm.getValue())}));
+  });
+  document.querySelectorAll('textarea[data-cm="edit"]').forEach(function(ta){
+    var id = ta.getAttribute('data-cid');
+    if(id) jobs.push(fetch('/sync_cell?id='+id, {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'source='+encodeURIComponent(ta.value)}));
+  });
+  return Promise.all(jobs);
+}
+function boopSaveNotebook(){
+  boopSyncAllEditors().then(function(){ htmx.ajax('POST', '/save_now', {swap:'none'}); });
 }
 function boopComposerSplit(cm){
   htmx.ajax('POST', '/split', {target:'#notebook', swap:'beforeend',
@@ -281,12 +315,12 @@ daisy_hdrs = [
 ]
 
 
-# %% ../nbs/01_cells.ipynb #1bc0f1e4
+# %% ../nbs/01_cells.ipynb #dffe631a
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
 rt  = app.route
 p   = partial(HTMX, app=app, host=None, port=None)
 
-# %% ../nbs/01_cells.ipynb #5e2337be
+# %% ../nbs/01_cells.ipynb #f17bb8ea
 _shell = get_shell()
 _shell.system = _shell.system_piped   # capture `!cmd` output into stdout
 
@@ -299,7 +333,7 @@ def run_code(src):
     if res.result is not None: return res.result
     return (res.stdout or '').replace('\r\n', '\n')
 
-# %% ../nbs/01_cells.ipynb #4d7c5f39
+# %% ../nbs/01_cells.ipynb #f436e976
 CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is generated
 
 class Cell:
@@ -310,7 +344,7 @@ class Cell:
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
 
-# %% ../nbs/01_cells.ipynb #382c03a8
+# %% ../nbs/01_cells.ipynb #1dcfc23d
 class Notebook:
     def __init__(self):
         self.cells, self._nid, self.compose_type, self.selected = [], 0, 'code', None
@@ -409,7 +443,7 @@ nb = Notebook()
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
 
-# %% ../nbs/01_cells.ipynb #40c37ec2
+# %% ../nbs/01_cells.ipynb #b608303e
 def get_model_list(debug:bool=False): 
     "Get a list of supported (local) models"
     import httpx
@@ -419,7 +453,7 @@ def get_model_list(debug:bool=False):
         raise RuntimeError("No local LLM models found -- is Ollama running, and do you have any models pulled?")
     return ['ollama/'+m['model'] for m in models['models']]
 
-# %% ../nbs/01_cells.ipynb #46d0c860
+# %% ../nbs/01_cells.ipynb #4613d27b
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
 # triggers a bug in litellm's MCP-handler codepath that returns a raw dict instead of a proper
 # response object (AttributeError: 'dict' object has no attribute 'choices'). Same issue hit by
@@ -444,7 +478,7 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools=[]):
     return contents(response).content
 
 
-# %% ../nbs/01_cells.ipynb #6ed09cb4
+# %% ../nbs/01_cells.ipynb #c60dcd1c
 def llm_context(nb, cur_id=None):
     "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order."
     cutoff = len(nb.cells)
@@ -453,7 +487,7 @@ def llm_context(nb, cur_id=None):
         if i is not None: cutoff = i + 1
     return '\n'.join(f'[{c.ctype}] {c.source}' for c in nb.cells[:cutoff] if c.visible)
 
-# %% ../nbs/01_cells.ipynb #7188a0b4
+# %% ../nbs/01_cells.ipynb #9b2a1120
 def stub_reply(nb, prompt):
     "fake/placeholder reply in case llms aren't available (can still test gui)"
     n = sum(c.visible for c in nb.cells)
@@ -461,7 +495,7 @@ def stub_reply(nb, prompt):
     return (f'(stub) I can see {n} visible cell(s). You said: '
             f'"{prompt.strip()}". Wire a real model into stub_reply() later.')
 
-# %% ../nbs/01_cells.ipynb #ad51d6f2
+# %% ../nbs/01_cells.ipynb #74783b6a
 _PREFERRED_MODEL_SUBSTR = 'qwen2.5-coder'  # used if present, regardless of exact tag/version
 
 def ensure_models():
@@ -480,7 +514,7 @@ try:
 except: 
     print("WARNING: Can't test this cell in notebook, no app")
 
-# %% ../nbs/01_cells.ipynb #a9a4a6e9
+# %% ../nbs/01_cells.ipynb #fde4a2d6
 BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
           'prompt':'border-error', 'assistant':'border-error'}
 
@@ -530,7 +564,7 @@ def _set_export(source, flag):
     return f'#| export\n{stripped}' if flag else stripped
 
 
-# %% ../nbs/01_cells.ipynb #8ccaf3c3
+# %% ../nbs/01_cells.ipynb #66ba7abd
 def cell_toolbar(c):
     tgt = '#notebook'
     copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
@@ -557,7 +591,7 @@ def cell_toolbar(c):
     return Div(*btns, cls='flex gap-1 ml-auto')
 
 
-# %% ../nbs/01_cells.ipynb #010f41fa
+# %% ../nbs/01_cells.ipynb #5dfcd325
 def type_dropdown(c):
     "Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell."
     if c.ctype == 'assistant':
@@ -631,7 +665,7 @@ def render_cell_edit(c):
 def render_nb():
     return Div(*[render_cell(c) for c in nb.cells], id='notebook', cls='flex flex-col')
 
-# %% ../nbs/01_cells.ipynb #adeb45a5
+# %% ../nbs/01_cells.ipynb #be406539
 def composer(draft='', oob=False):
     tabs = [fh.A(t.capitalize(),
                  cls=f'tab {"tab-active" if nb.compose_type==t else ""}',
@@ -653,7 +687,7 @@ def composer(draft='', oob=False):
 def render_app(draft=''):
     return Div(render_nb(), composer(draft), id='app')
 
-# %% ../nbs/01_cells.ipynb #308352d3
+# %% ../nbs/01_cells.ipynb #f8ed3da1
 # ---- top menu / control bar ----
 def theme_swap():
     "DaisyUI sun/moon swap; drives boopApplyTheme (default dark)."
@@ -738,14 +772,15 @@ def set_model(model:str):
     return ''
 
 def file_menu():
-    "Hamburger dropdown: New / Open (file browser) / Save / Download."
+    "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
     items = [
         Li(fh.A('New', href=new_notebook.to(),
                 onclick="return confirm('Discard the current notebook and start a new one?')")),
         Li(fh.A('Open', onclick="document.getElementById('file-modal').showModal()",
                 hx_get=browse.to(), hx_target='#file-browser-body', hx_swap='innerHTML')),
-        Li(fh.A('Save', hx_post=save_now, hx_swap='none')),
+        Li(fh.A('Save', href='javascript:void(0)', onclick='boopSaveNotebook()')),
         Li(fh.A('Download', href=download.to())),
+        Li(fh.A('Restart Server', href='javascript:void(0)', onclick='boopRestartServer()')),
     ]
     return Div(
         Div(Icon('bars-3'), tabindex='0', role='button', cls='btn btn-ghost btn-circle btn-sm'),
@@ -796,12 +831,24 @@ def index():
             Div(top_bar(),
                 Div(Div(render_app(), cls='max-w-3xl mx-auto p-4'),
                     cls='flex-1 overflow-y-auto'),
+                Div(id='save-toast', cls='toast toast-top toast-end z-50'),
                 cls='h-screen flex flex-col'))
 
 @rt
+def _toast(msg, ok=True):
+    "A little 'Saved' (or error) notice, out-of-band-swapped into #save-toast, that clears itself after ~1.8s."
+    return Div(
+        Div(msg, cls=f"alert {'alert-success' if ok else 'alert-error'} shadow-lg text-sm py-2 px-4"),
+        Script("setTimeout(function(){ var t=document.getElementById('save-toast'); if(t) t.innerHTML=''; }, 1800)"),
+        id='save-toast', cls='toast toast-top toast-end z-50', hx_swap_oob='true')
+
+@rt
 def save_now():
-    save_notebook()
-    return ''
+    try:
+        p = save_notebook()
+        return _toast(f'Saved {p.name}')
+    except Exception as e:
+        return _toast(f'Save failed: {e}', ok=False)
 
 def _safe_dir(path):
     "Resolve `path` (relative to BROWSE_ROOT) and clamp it back to BROWSE_ROOT if it tries to escape (e.g. via '..')."
@@ -847,6 +894,27 @@ def open_file(path:str):
 def new_notebook():
     nb.reset()
     return index()
+
+@rt
+def restart_server():
+    "nbdev-export the notebooks as a real (blocking) subprocess -- so we get a genuine exit code instead of guessing a delay -- then clear __pycache__ (WSL/Windows-mounted filesystems can have coarse mtime resolution, which can trick Python into serving stale cached bytecode right after a fast save-then-restart) and exec a fresh copy of this process (same PID, same port). Aborts (leaves the current process running) if export fails. Does NOT save the notebook first; Save manually beforehand if you want to keep unsaved edits."
+    def _do_restart():
+        time.sleep(0.3)  # let the HTTP response reach the browser before we touch anything disruptive
+        exe = Path(sys.executable).parent/'nbdev-export'
+        exe = str(exe) if exe.exists() else 'nbdev-export'
+        result = subprocess.run([exe], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f'nbdev-export failed ({result.returncode}), aborting restart:\n{result.stderr}', file=sys.stderr, flush=True)
+            return
+        cache_dir = Path(__file__).parent/'__pycache__'
+        if cache_dir.exists(): shutil.rmtree(cache_dir, ignore_errors=True)
+        port = os.environ.get('BOOPITER_PORT', '8000')
+        args = [sys.executable, sys.argv[0]]
+        if nb.name != 'untitled': args.append(f'{nb.name}.ipynb')
+        args += ['--port', port]
+        os.execv(sys.executable, args)
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return ''
 
 @rt
 def download():
@@ -965,7 +1033,8 @@ def move_cell(id:int, delta:int):
     nb.move(id, delta)
     return render_nb()
 
-# %% ../nbs/01_cells.ipynb #02850a6c
+
+# %% ../nbs/01_cells.ipynb #2e799b38
 # --- command-mode (hotkey) routes ---
 @rt
 def select(id:int):
@@ -1052,3 +1121,11 @@ def save_cell(id:int, source:str):
         else:
             c.source = source
     return render_cell(c) if c else render_nb()
+
+@rt
+def sync_cell(id:int, source:str):
+    "Update a cell's source WITHOUT executing it -- used by Save to flush any editor content that was never explicitly run (Shift+Enter), matching Jupyter's WYSIWYG save behavior."
+    c = nb.get(id)
+    if c:
+        c.source = _set_export(source, _has_export(c.source)) if c.ctype == 'code' else source
+    return ''

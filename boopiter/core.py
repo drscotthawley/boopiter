@@ -8,7 +8,7 @@ Docs: https://drscotthawley.github.io/boopiter/core.html.md"""
 __all__ = ['launch']
 
 # %% ../nbs/00_core.ipynb #da4d26dd
-import subprocess, sys, time, urllib.request, urllib.error
+import os, subprocess, sys, time, urllib.request, urllib.error
 from pathlib import Path
 from typing import Annotated
 from fastcore.script import call_parse
@@ -65,8 +65,8 @@ def launch(
         try:
             _cells.load_notebook(nbfile)
         except FileNotFoundError:
-            print(f"No such notebook: {nbfile}", file=sys.stderr)
-            sys.exit(1)
+            print(f"No such notebook: {nbfile} -- starting with a blank notebook instead.", file=sys.stderr)
+    os.environ['BOOPITER_PORT'] = str(port)  # lets a self-restart (see cells.restart_server) rebind the same port
     import uvicorn
     uvicorn.run('boopiter.cells:app', host='0.0.0.0', port=port)
 
