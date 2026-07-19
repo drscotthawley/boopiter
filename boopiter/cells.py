@@ -7,18 +7,19 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
            'Cell', 'Notebook', 'get_model_list', 'prompt_llm', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models',
-           'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'code_view', 'code_editor',
-           'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook',
-           'load_notebook', 'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu',
-           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
-           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending',
-           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
-           'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected',
-           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'render_output_blocks',
+           'code_view', 'code_editor', 'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app',
+           'theme_swap', 'save_notebook', 'load_notebook', 'fname_display', 'rename_form', 'model_dropdown',
+           'set_model', 'file_menu', 'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png',
+           'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download',
+           'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell',
+           'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis',
+           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected',
+           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
+           'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
-import os, shutil, subprocess, sys, threading, time
+import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
 from pathlib import Path
 from fastcore.utils import *
 from fasthtml.common import *
@@ -27,6 +28,7 @@ import fasthtml.components as fh
 from fasthtml.svg import Path as SvgPath  # fastcore's pathlib.Path shadows fasthtml's svg <path> element otherwise
 from fasthtml.svg import G as SvgG  # groups a sub-path so it can be scaled independently of its parent icon
 from toolslm.shell import get_shell
+from IPython.utils.capture import capture_output
 from datetime import datetime
 import nbformat as _nbf
 from lisette import *
@@ -101,16 +103,72 @@ p   = partial(HTMX, app=app, host=None, port=None)
 _shell = get_shell()
 _shell.system = _shell.system_piped   # capture `!cmd` output into stdout
 
+# get_shell() builds a standalone TerminalInteractiveShell without registering it as IPython's
+# active instance -- so capture_output() (which looks up get_ipython() internally to find a shell
+# to capture display() calls from) can't find it and silently skips rich-output capture entirely.
+from IPython.core.interactiveshell import InteractiveShell
+InteractiveShell._instance = _shell
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # headless -- figures are captured explicitly in run_code(), not via any interactive/inline backend
+except ImportError:
+    pass
+
+# IPython disables every rich MIME formatter but text/plain on a bare shell -- turn the ones we
+# know how to render back on, so e.g. a DataFrame's _repr_html_ or a returned PIL Image gets used
+# (both for display(...) calls and for the auto-formatted last expression; see run_code()).
+_MIME_PRIORITY = ('text/html', 'image/svg+xml', 'image/png', 'text/markdown', 'application/json')
+for _mime in _MIME_PRIORITY:
+    if _mime in _shell.display_formatter.formatters:
+        _shell.display_formatter.formatters[_mime].enabled = True
+
 
 # %% ../nbs/01_cells.ipynb #fa801f24
-def run_code(src:str) -> Any:
-    "Execute `src` in the shared shell; return result, stdout, or an error string."
-    res = _shell.run_cell(src)
+def _collapse_cr(s:str) -> str:
+    "Collapse \\r-overwritten text (tqdm-style progress bars) down to each line's final state."
+    return '\n'.join(ln.split('\r')[-1] for ln in s.split('\n'))
+
+def _best_block(fmt:dict) -> dict:
+    "The richest available rendering of a formatted-object MIME dict, as an output block; falls back to its plain-text repr."
+    for mime in _MIME_PRIORITY:
+        if mime in fmt:
+            return {'type':'display', 'mime':mime, 'data':fmt[mime]}
+    return {'type':'stream', 'mime':None, 'data':fmt.get('text/plain', '')}
+
+def _flush_figures() -> list[dict]:
+    "Any matplotlib figures left open after a cell runs, as image/png display blocks -- captured explicitly (savefig + close) rather than relying on an inline backend's event hooks, which proved unreliable on this headless shell."
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return []
+    blocks = []
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        buf = _pyio.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight')
+        blocks.append({'type':'display', 'mime':'image/png', 'data':base64.b64encode(buf.getvalue()).decode()})
+        plt.close(fig)
+    return blocks
+
+def run_code(src:str) -> list[dict]:
+    "Execute `src` in the shared shell; return an ordered list of output blocks (each a dict with 'type' -- stream/error/display -- and, for display blocks, a 'mime' type). See Cell.output."
+    with capture_output() as io:
+        res = _shell.orig_run(src)  # bypass toolslm's run_cell wrapper -- it discards stderr and any display() output, keeping only stdout
+    blocks = []
     if res.error_in_exec is not None:
         e = res.error_in_exec
-        return f'{type(e).__name__}: {e}'
-    if res.result is not None: return res.result
-    return (res.stdout or '').replace('\r\n', '\n')
+        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
+    text = _collapse_cr((io.stdout or '') + (io.stderr or ''))
+    if text:
+        blocks.append({'type':'stream', 'mime':None, 'data':text})
+    blocks += [_best_block(o.data) for o in io.outputs]  # explicit display(...) calls, in call order
+    if res.result is not None:
+        fmt, _md = _shell.display_formatter.format(res.result)
+        blocks.append(_best_block(fmt))
+    blocks += _flush_figures()
+    return blocks
+
 
 # %% ../nbs/01_cells.ipynb #d4ec58e1
 CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is generated
@@ -489,6 +547,27 @@ def _cell_outer(c:Cell, *content, oob=None) -> FT:
                cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}', **kw)
 
 
+# %% ../nbs/01_cells.ipynb #415f6aef
+def render_output_blocks(blocks:list[dict]) -> list[FT]:
+    "Render each of a code cell's output blocks (see Cell.output / run_code()) to its appropriate FT: an <img> for images, raw markup for HTML/SVG, client-side-rendered markdown for text/markdown (same '.marked' pipeline as note cells), pretty-printed for JSON, and a plain (ANSI-aware) <pre> for stream/error text."
+    out = []
+    for b in blocks:
+        mime, data = b.get('mime'), b['data']
+        if mime == 'image/png':
+            out.append(Img(src=f'data:image/png;base64,{data}', cls='max-w-full mt-1'))
+        elif mime == 'image/svg+xml':
+            out.append(Div(NotStr(data), cls='mt-1'))
+        elif mime == 'text/html':
+            out.append(Div(NotStr(data), cls='mt-1'))
+        elif mime == 'text/markdown':
+            out.append(Div(data, cls='marked prose max-w-none mt-1'))
+        elif mime == 'application/json':
+            out.append(Pre(json.dumps(json.loads(data), indent=2), cls='text-sm mt-1 overflow-x-auto'))
+        else:
+            cls = 'ansi-out text-sm mt-1 whitespace-pre overflow-x-auto' + (' text-error' if b['type'] == 'error' else '')
+            out.append(Pre(data, cls=cls))
+    return out
+
 # %% ../nbs/01_cells.ipynb #9d004dc0
 def code_view(c:Cell) -> FT:
     "Static, syntax-highlighted (no live CodeMirror) view of a code cell -- click to load the real editor. Keeping non-focused cells static is what makes theme switches etc. fast on notebooks with many code cells."
@@ -496,9 +575,10 @@ def code_view(c:Cell) -> FT:
         parts = [Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')]
     else:
         parts = [Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto')]
-    if c.output not in (None, ''):
-        parts.append(Pre(str(c.output), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto'))
+    if c.output:
+        parts += render_output_blocks(c.output)
     return Div(*parts, cls='cursor-text', hx_get=edit_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')
+
 
 # %% ../nbs/01_cells.ipynb #ef7dc0f4
 def code_editor(c:Cell) -> FT:
@@ -508,9 +588,10 @@ def code_editor(c:Cell) -> FT:
                   cls='textarea textarea-bordered w-full font-mono',
                   data_cm='code', data_cid=str(c.id))
     parts = [Form(ta, hx_post=save_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')]
-    if c.output not in (None, ''):
-        parts.append(Pre(str(c.output), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto'))
+    if c.output:
+        parts += render_output_blocks(c.output)
     return Div(*parts)
+
 
 # %% ../nbs/01_cells.ipynb #ca88c9db
 def render_cell(c:Cell, oob=None) -> FT:
@@ -594,6 +675,36 @@ def theme_swap() -> FT:
 # %% ../nbs/01_cells.ipynb #c7096cb2
 _BOOP2NB = {'code':'code', 'note':'markdown', 'prompt':'markdown', 'raw':'raw', 'assistant':'markdown'}  # our ctype -> nbformat cell_type
 
+# %% ../nbs/01_cells.ipynb #e642cc22
+def _blocks_to_nb_outputs(blocks:list[dict]) -> list:
+    "Cell.output's block list -> real nbformat outputs, so saved .ipynb files stay valid (and render in GitHub/real Jupyter too)."
+    outs = []
+    for b in blocks:
+        if b['type'] == 'stream':
+            outs.append(_nbf.v4.new_output('stream', name='stdout', text=b['data']))
+        elif b['type'] == 'error':
+            ename, _, evalue = b['data'].partition(': ')
+            outs.append(_nbf.v4.new_output('error', ename=ename, evalue=evalue, traceback=[b['data']]))
+        else:  # display
+            outs.append(_nbf.v4.new_output('display_data', data={b['mime']: b['data']}))
+    return outs
+
+def _nb_outputs_to_blocks(outputs:list) -> list[dict]:
+    "Inverse of _blocks_to_nb_outputs()."
+    blocks = []
+    for o in outputs:
+        ot = o.get('output_type')
+        if ot == 'stream':
+            blocks.append({'type':'stream', 'mime':None, 'data':o.get('text', '')})
+        elif ot == 'error':
+            data = f"{o.get('ename','')}: {o.get('evalue','')}" if o.get('ename') else o.get('evalue', '')
+            blocks.append({'type':'error', 'mime':None, 'data':data})
+        elif ot in ('display_data', 'execute_result'):
+            data = o.get('data', {})
+            mime = next((m for m in _MIME_PRIORITY if m in data), next(iter(data), None))
+            if mime: blocks.append({'type':'display', 'mime':mime, 'data':data[mime]})
+    return blocks
+
 # %% ../nbs/01_cells.ipynb #e3ceb49a
 def save_notebook(path:str|Path|None=None) -> Path:
     "Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd, by default). Preserves each cell's original .ipynb id (or captures a freshly-assigned one) so unchanged cells don't produce noisy git diffs. The '#| export' pragma is prepended to code cell source here (and only here) -- nbdev's own parser needs it literally in the file, but boopiter keeps it out of c.source/the editor; see load_notebook() for the inverse."
@@ -605,7 +716,7 @@ def save_notebook(path:str|Path|None=None) -> Path:
         idkw = {'id': c.nb_id} if c.nb_id else {}
         src = f'#| export\n{c.source}' if (c.ctype == 'code' and c.export) else c.source
         if kind == 'code':
-            outputs = [_nbf.v4.new_output('stream', name='stdout', text=str(c.output))] if c.output not in (None, '') else []
+            outputs = _blocks_to_nb_outputs(c.output) if c.output else []
             cell = _nbf.v4.new_code_cell(src, outputs=outputs, metadata=meta, **idkw)
         elif kind == 'markdown':
             cell = _nbf.v4.new_markdown_cell(src, metadata=meta, **idkw)
@@ -615,6 +726,7 @@ def save_notebook(path:str|Path|None=None) -> Path:
         doc.cells.append(cell)
     _nbf.write(doc, str(path))
     return path
+
 
 # %% ../nbs/01_cells.ipynb #52e1b897
 _NB_FALLBACK = {'code':'code', 'markdown':'note', 'raw':'raw'}  # nbformat cell_type -> our ctype, for plain (non-boopiter) notebooks
@@ -634,14 +746,14 @@ def load_notebook(path:str|Path) -> Notebook:
             ctype = _NB_FALLBACK.get(cell.cell_type, 'raw')  # plain (non-boopiter) notebook
         output = None
         if ctype == 'code':
-            texts = [o.get('text','') for o in cell.get('outputs', []) if o.get('output_type') == 'stream']
-            output = ''.join(texts) or None
+            output = _nb_outputs_to_blocks(cell.get('outputs', [])) or None
         src, exported = cell.source, False
         if ctype == 'code' and _has_export(src):
             exported, src = True, _strip_export(src)
         nb.add(ctype, src, output=output, visible=meta.get('visible', True), nb_id=cell.get('id'), export=exported)
     nb.name = str(path.with_suffix(''))  # keep the directory, only strip .ipynb
     return nb
+
 
 # %% ../nbs/01_cells.ipynb #03860723
 def fname_display() -> FT:
