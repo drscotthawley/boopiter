@@ -504,15 +504,15 @@ nb = Notebook()  # the single running notebook instance
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
 # %% ../nbs/01_cells.ipynb #9df9b2f0
-def get_model_list(debug:bool=False) -> list[str]:
-    "Query Ollama for the local models it currently has pulled, as lisette-style 'ollama/<name>' strings."
-    import httpx
-    models = httpx.get("http://localhost:11434/api/tags").json()
-    if debug: print("models = ",models)
-    if not models.get('models'):
-        raise RuntimeError("No local LLM models found -- is Ollama running, and do you have any models pulled?")
-    return ['ollama/'+m['model'] for m in models['models']]
-
+def get_model_list(): 
+    "Get a list of supported (local) models; returns [] and warns if Ollama unavailable."
+    import httpx, warnings
+    try:
+        models = httpx.get("http://localhost:11434/api/tags").json()
+        return ['ollama/'+m['model'] for m in models.get('models', [])]
+    except Exception as e:
+        warnings.warn(f"Ollama not available: {e}")
+        return []
 
 # %% ../nbs/01_cells.ipynb #b7fdcd9f
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
