@@ -6,17 +6,17 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'Cell', 'Notebook', 'get_model_list', 'prompt_llm', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models',
-           'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'render_output_blocks',
-           'code_view', 'code_editor', 'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app',
-           'theme_swap', 'save_notebook', 'load_notebook', 'fname_display', 'rename_form', 'model_dropdown',
-           'set_model', 'file_menu', 'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png',
-           'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download',
-           'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell',
-           'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis',
-           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected',
-           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
-           'sync_cell']
+           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'get_model_list', 'prompt_llm', 'add_tool',
+           'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
+           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
+           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
+           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'file_browser_modal',
+           'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse',
+           'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel', 'run_all',
+           'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell',
+           'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell',
+           'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
+           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -168,6 +168,88 @@ def run_code(src:str) -> list[dict]:
         blocks.append(_best_block(fmt))
     blocks += _flush_figures()
     return blocks
+
+
+# %% ../nbs/01_cells.ipynb #b7b23d4c
+class _RunState:
+    "Tracks one in-flight background code-cell execution. Only one cell can run at a time (like a real kernel), so a single `_run_state` global is enough."
+    def __init__(self, cell_id:int):
+        self.cell_id = cell_id
+        self.buffer:list[str] = []   # text chunks written so far, in arrival order
+        self.done = False
+        self.blocks:list[dict]|None = None
+        self.thread:threading.Thread|None = None
+
+_run_state:'_RunState|None' = None  # the one code cell currently executing in the background, if any
+
+class _TeeStream(_pyio.TextIOBase):
+    "A writable stream that appends every write() straight into a _RunState's buffer, so a poll request mid-execution can see output as it's produced -- unlike capture_output(), which only exposes text once its `with` block exits. Subclassing TextIOBase (rather than a bare object) gives it a real isatty()/readable()/etc. file protocol -- without it, libraries like tqdm that probe for a proper file object fall back to appending a newline per update instead of overwriting in place with '\\r'."
+    def __init__(self, state:_RunState): self.state = state
+    def writable(self) -> bool: return True
+    def write(self, s:str) -> int:
+        if s: self.state.buffer.append(s)
+        return len(s)
+
+def _run_code_bg(src:str, state:_RunState) -> None:
+    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
+    try:
+        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
+            res = _shell.orig_run(src)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    blocks = []
+    if res.error_in_exec is not None:
+        e = res.error_in_exec
+        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
+    text = _collapse_cr(''.join(state.buffer))
+    if text:
+        blocks.append({'type':'stream', 'mime':None, 'data':text})
+    blocks += [_best_block(o.data) for o in io.outputs]
+    if res.result is not None:
+        fmt, _md = _shell.display_formatter.format(res.result)
+        blocks.append(_best_block(fmt))
+    blocks += _flush_figures()
+    state.blocks = blocks
+    state.done = True
+
+def _run_output_div(id:int, text:str) -> FT:
+    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
+    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
+    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
+               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
+
+def pending_code_cell(c:'Cell', text:str='') -> FT:
+    "Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done."
+    return _cell_outer(c, cell_header(c, running=True),
+                        Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto'),
+                        _run_output_div(c.id, text))
+
+def _start_code_run(c:'Cell') -> FT:
+    "Kick off `c.source` running in a background thread and return a placeholder that polls for its progress; see run_code_poll()."
+    global _run_state
+    if nb.selected == c.id: nb.selected = None  # revert to the static (fast) view immediately, like every other cell type
+    state = _RunState(c.id)
+    state.thread = threading.Thread(target=_run_code_bg, args=(c.source, state), daemon=True)
+    _run_state = state
+    state.thread.start()
+    return pending_code_cell(c)
+
+@rt
+def run_code_poll(id:int) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
+    global _run_state
+    c = nb.get(id)
+    if not c: return ''
+    st = _run_state
+    if st is None or st.cell_id != id:
+        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
+    if not st.done:
+        return _run_output_div(id, ''.join(st.buffer))
+    c.output = st.blocks
+    _run_state = None
+    return '', render_cell(c, oob=True)
 
 
 # %% ../nbs/01_cells.ipynb #d4ec58e1
@@ -478,7 +560,10 @@ def cell_toolbar(c:Cell) -> FT:
                     'Hide from LLM' if c.visible else 'Show to LLM',
                     hx_post=toggle_vis.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
     if c.ctype == 'code':
-        btns.append(IconBtn('play', 'Run', onclick=f'boopSave({c.id})'))
+        # hx_post (not onclick=boopSave) so Run works whether or not the cell is currently being
+        # edited -- boopSave() requires a live CodeMirror/textarea, which a static (non-selected)
+        # code cell doesn't have.
+        btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
     elif c.ctype == 'prompt':
         # Targeted swap (not the whole #notebook) so re-running a prompt cell mid-notebook doesn't
         # blow away scroll position: swap the existing Assistant reply if there is one, else insert
@@ -500,7 +585,6 @@ def cell_toolbar(c:Cell) -> FT:
     return Div(*btns, cls='flex gap-1 ml-auto')
 
 
-
 # %% ../nbs/01_cells.ipynb #cd074735
 def type_dropdown(c:Cell) -> FT:
     "Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell."
@@ -517,12 +601,15 @@ def type_dropdown(c:Cell) -> FT:
 
 
 # %% ../nbs/01_cells.ipynb #5201dbfb
-def cell_header(c:Cell) -> FT:
-    "The top row of a cell: type dropdown, id/timestamp, and the toolbar."
+def cell_header(c:Cell, running:bool=False) -> FT:
+    "The top row of a cell: type dropdown, id/timestamp, and the toolbar. `running=True` (used by pending_code_cell() while a background execution is still in flight) adds a pulsing 'Running...' indicator that disappears once the cell finishes, whether it succeeded or errored."
     rest = f': {c.id}' + (f' ({c.ts})' if c.ctype in ('code','assistant') else '')
     if c.ctype == 'assistant' and c.model: rest += f' \xb7 {c.model}'
+    parts = [rest]
+    if running:
+        parts.append(Span(' Running...', cls='text-cyan-400 animate-pulse font-bold'))
     return Div(type_dropdown(c),
-               Span(rest, cls='font-semibold text-sm cursor-pointer flex-1',
+               Span(*parts, cls='font-semibold text-sm cursor-pointer flex-1',
                     hx_post=select.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'),
                cell_toolbar(c), cls='flex items-center gap-2 mb-1')
 
@@ -537,14 +624,14 @@ def cell_body(c:Cell) -> FT:
     return Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
 
 # %% ../nbs/01_cells.ipynb #8fc13eb4
-def _cell_outer(c:Cell, *content, oob=None) -> FT:
-    "The bordered wrapper div common to every cell, regardless of type or edit state. `oob`, if given, marks this div for an htmx out-of-band swap: True for a plain id-matched replace, or an 'hx-swap-oob' spec string (e.g. 'afterend:#cell-5') for a positional insert/replace elsewhere in the DOM."
+def _cell_outer(c:Cell, *content, oob=None, **extra) -> FT:
+    "The bordered wrapper div common to every cell, regardless of type or edit state. `oob`, if given, marks this div for an htmx out-of-band swap: True for a plain id-matched replace, or an 'hx-swap-oob' spec string (e.g. 'afterend:#cell-5') for a positional insert/replace elsewhere in the DOM. `extra` kwargs (e.g. hx_post/hx_trigger) are forwarded straight to the Div -- see pending_code_cell()."
     dim    = '' if c.visible else 'opacity-40'
     indent = 'ml-8' if c.ctype == 'assistant' else ''
     ring   = 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 rounded' if c.id == nb.selected else ''
     kw = {'hx_swap_oob': 'true' if oob is True else oob} if oob else {}
     return Div(*content, id=f'cell-{c.id}',
-               cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}', **kw)
+               cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}', **kw, **extra)
 
 
 # %% ../nbs/01_cells.ipynb #415f6aef
@@ -1048,8 +1135,16 @@ def run_all() -> FT:
 # %% ../nbs/01_cells.ipynb #76a633a6
 @rt
 def interrupt_kernel() -> str:
-    "Placeholder: true interrupt needs threaded/async execution."
+    "Best-effort interrupt: inject a KeyboardInterrupt into the currently-running background thread, if any (CPython's PyThreadState_SetAsyncExc, the same low-level trick real kernels use for SIGINT-based interrupts). It fires at the interrupted thread's next bytecode boundary, so it reliably breaks ordinary Python loops (e.g. a tqdm-wrapped for-loop) but can't preempt a single blocking C call already in flight."
+    st = _run_state
+    if st is not None and st.thread is not None and st.thread.is_alive():
+        import ctypes
+        tid = ctypes.c_long(st.thread.ident)
+        res = ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, ctypes.py_object(KeyboardInterrupt))
+        if res > 1:  # affected more than one thread -- back it out
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, None)
     return ''
+
 
 # %% ../nbs/01_cells.ipynb #59d0d7be
 @rt
@@ -1138,11 +1233,10 @@ def split_cell(id:int, pos:int) -> FT|tuple:
 # %% ../nbs/01_cells.ipynb #4fb284a3
 @rt
 def run_cell(id:int) -> FT:
-    "Run this cell (Code: execute immediately and re-render; Prompt: return a pending placeholder that fetches its own reply, so the caller can target just this cell instead of the whole notebook)."
+    "Run this cell (Code: kick off background execution and return a placeholder that streams its progress; Prompt: return a pending placeholder that fetches its own reply), so the caller can target just this cell instead of the whole notebook."
     c = nb.get(id)
     if c and c.ctype == 'code':
-        c.output = run_code(c.source)
-        return render_nb()
+        return _start_code_run(c)
     elif c and c.ctype == 'prompt':
         return pending_cell(id)
     return render_nb()
@@ -1354,9 +1448,7 @@ def save_cell(id:int, source:str) -> FT|tuple:
     if not c: return render_nb()
     c.source = source
     if c.ctype == 'code':
-        c.output = run_code(c.source)
-        if nb.selected == id: nb.selected = None  # revert to the static (fast) view, like every other cell type
-        return render_cell(c)
+        return _start_code_run(c)
     elif c.ctype == 'prompt':
         i = nb.index(c.id)
         nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
