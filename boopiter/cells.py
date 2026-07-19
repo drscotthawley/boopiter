@@ -6,17 +6,17 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'get_model_list', 'prompt_llm',
-           'pending_prompt_cell', 'run_prompt_poll', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon',
-           'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'render_output_blocks', 'code_view',
-           'code_editor', 'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap',
-           'save_notebook', 'load_notebook', 'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu',
-           'context_menu', 'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css',
-           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename',
-           'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type', 'add_cell', 'submit_cell', 'split',
-           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
-           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll',
+           'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
+           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
+           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
+           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'context_menu',
+           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
+           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell',
+           'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert',
+           'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected',
+           'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -32,6 +32,8 @@ from IPython.utils.capture import capture_output
 from datetime import datetime
 import nbformat as _nbf
 from lisette import *
+from .llm import *  # get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
+from .llm import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llm.py's __all__, so import * won't bring them in
 
 
 # %% ../nbs/01_cells.ipynb #c7250022
@@ -389,59 +391,6 @@ nb = Notebook()  # the single running notebook instance
 # %% ../nbs/01_cells.ipynb #a26a7ddb
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
-# %% ../nbs/01_cells.ipynb #9df9b2f0
-def get_model_list(): 
-    "Get a list of supported (local) models; returns [] and warns if Ollama unavailable."
-    import httpx, warnings
-    try:
-        models = httpx.get("http://localhost:11434/api/tags").json()
-        return ['ollama/'+m['model'] for m in models.get('models', [])]
-    except Exception as e:
-        warnings.warn(f"Ollama not available: {e}")
-        return []
-
-# %% ../nbs/01_cells.ipynb #b7fdcd9f
-# lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
-# triggers a bug in litellm's MCP-handler codepath that returns a raw dict instead of a proper
-# response object (AttributeError: 'dict' object has no attribute 'choices'). Same issue hit by
-# SBrewer15/CellMate (https://github.com/SBrewer15/CellMate) -- this is their patch, adopted as-is:
-# drop tool_schemas for just that one call whenever tool_choice=='none', then restore them after.
-_orig_chat_call = Chat._call
-
-
-# %% ../nbs/01_cells.ipynb #e7617fd4
-@patch
-def _call(self:Chat, msg:str|None=None, prefill:str|None=None, temp:float|None=None, think:str|None=None,
-          search:str|None=None, stream:bool=False, max_steps:int=2, step:int=1, final_prompt:dict|None=None,
-          tool_choice:str|None=None, max_tokens:int|None=None, **kwargs):
-    "Internal method that always yields responses -- patched (see the comment above) to avoid a litellm/Ollama tool-calling bug."
-    _orig_tools = self.tool_schemas
-    if tool_choice == 'none': self.tool_schemas, tool_choice = None, None
-    try: yield from _orig_chat_call(self, msg, prefill, temp, think, search, stream, max_steps, step, final_prompt, tool_choice, max_tokens, **kwargs)
-    finally: self.tool_schemas = _orig_tools
-
-# %% ../nbs/01_cells.ipynb #834cf2bc
-def _reply_details_html(response, msg) -> str:
-    "A collapsible <details> block summarizing an LLM call's metadata (model, finish reason, token counts, tool calls, reasoning) -- not part of the reply's actual content, kept out of Cell.source (see Cell.details) so it's never sent back to the model as context, and shown collapsed, in gray, above the real text. onclick=stopPropagation keeps a click on <summary> from also bubbling into the cell's click-anywhere-to-edit handler."
-    u = response.usage
-    rows = [('Model', response.model), ('Finish reason', response.choices[0].finish_reason)]
-    if u: rows.append(('Tokens', f'{u.prompt_tokens} prompt + {u.completion_tokens} completion = {u.total_tokens} total'))
-    if msg.tool_calls: rows.append(('Tool calls', ', '.join(tc.function.name for tc in msg.tool_calls)))
-    items = ''.join(f'<li>{k}: {v}</li>' for k, v in rows)
-    reasoning = f'<pre style="white-space:pre-wrap">{msg.reasoning_content}</pre>' if getattr(msg, 'reasoning_content', None) else ''
-    return (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
-            f'<ul>{items}</ul>{reasoning}</details>')
-
-def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None) -> tuple[str,str]:
-    "Send a prompt to the LLM; returns (content, details_html) -- the reply text itself, and a separate collapsible <details> block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. TODO: can we stream the response rather than wait for as a final big chunk?"
-    # _skip_mcp_handler avoids litellm's MCP-proxy import chain (needs fastapi/orjson) that we don't use.
-    # Drop it (and re-add fastapi/orjson to pyproject.toml) if/when we actually want MCP tool support.
-    chat = Chat(model, tools=tools or [], callkw={'_skip_mcp_handler': True}) # FYI: this makes a fresh stateless context each time. is that what we want?
-    response = chat(context)
-    msg = contents(response)
-    return msg.content, _reply_details_html(response, msg)
-
-
 # %% ../nbs/01_cells.ipynb #104800db
 _prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming a reply, if any -- parallel to _run_state (code), not shared with it: a code cell and a prompt reply use different resources and can run at the same time.
 
@@ -543,10 +492,6 @@ def stub_reply(nb:Notebook, prompt:str) -> str:
     # TODO: use the prompt_llm routine instead to get real llm interaction
     return (f'(stub) I can see {n} visible cell(s). You said: '
             f'"{prompt.strip()}". Wire a real model into stub_reply() later.')
-
-
-# %% ../nbs/01_cells.ipynb #c7bc561b
-_PREFERRED_MODEL_SUBSTR = 'qwen2.5-coder'  # used if present, regardless of exact tag/version
 
 
 # %% ../nbs/01_cells.ipynb #db01327f
