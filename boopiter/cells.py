@@ -15,8 +15,9 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
            'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending',
            'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
-           'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected',
-           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected',
+           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
+           'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -602,7 +603,7 @@ def type_dropdown(c:Cell) -> FT:
 
 # %% ../nbs/01_cells.ipynb #5201dbfb
 def cell_header(c:Cell, running:bool=False) -> FT:
-    "The top row of a cell: type dropdown, id/timestamp, and the toolbar. `running=True` (used by pending_code_cell() while a background execution is still in flight) adds a pulsing 'Running...' indicator that disappears once the cell finishes, whether it succeeded or errored."
+    "The top row of a cell: type dropdown, id/timestamp, and the toolbar. `running=True` (used by pending_code_cell() while a background execution is still in flight) adds a pulsing 'Running...' indicator that disappears once the cell finishes, whether it succeeded or errored. flex-wrap lets the toolbar drop to its own line on narrow (mobile) viewports instead of squeezing/overlapping."
     rest = f': {c.id}' + (f' ({c.ts})' if c.ctype in ('code','assistant') else '')
     if c.ctype == 'assistant' and c.model: rest += f' \xb7 {c.model}'
     parts = [rest]
@@ -611,7 +612,7 @@ def cell_header(c:Cell, running:bool=False) -> FT:
     return Div(type_dropdown(c),
                Span(*parts, cls='font-semibold text-sm cursor-pointer flex-1',
                     hx_post=select.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'),
-               cell_toolbar(c), cls='flex items-center gap-2 mb-1')
+               cell_toolbar(c), cls='flex flex-wrap items-center gap-2 mb-1')
 
 
 # %% ../nbs/01_cells.ipynb #79fd4204
@@ -937,6 +938,7 @@ def help_modal() -> FT:
         ('c', 'Copy the selected cell'),
         ('x', 'Cut the selected cell'),
         ('v', 'Paste after the selected cell'),
+        ('w', 'Copy code blocks from the selected Assistant reply into new Code cells below it'),
         ('d d', 'Delete the selected cell (press d twice)'),
         ('s', 'Save the notebook'),
     ]
@@ -972,8 +974,10 @@ def top_bar() -> FT:
     # looking bigger than the moon/sun -- these are stroked outline icons vs. theme_swap()'s filled
     # ones, so the same box reads heavier); 18px still read as closer to the smaller end.
     icon_cls = 'size-[19px]'
-    ctrls = Div(
-        model_dropdown(),
+    # No flex-wrap on this inner group -- these five stay together as one atomic unit when the
+    # outer ctrls row wraps, instead of the model dropdown "stealing" just the first icon's worth
+    # of leftover space on its own line and orphaning it from its siblings.
+    icon_btns = Div(
         fh.Button(Icon('question-mark-circle', cls=icon_cls), data_tip='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   onclick="document.getElementById('help-modal').showModal()"),
         fh.Button(Icon('x-circle', cls=icon_cls), data_tip='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
@@ -982,9 +986,10 @@ def top_bar() -> FT:
                   hx_post=restart_kernel, hx_swap='none'),
         fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
-        theme_swap(), cls='flex items-center gap-1')
+        theme_swap(), cls='flex items-center gap-1 shrink-0')
+    ctrls = Div(model_dropdown(), icon_btns, cls='flex items-center gap-1 flex-wrap justify-end')
     return Div(brand, ctrls, file_browser_modal(), help_modal(), context_menu(),
-               cls='navbar bg-base-200 shadow px-4 flex justify-between shrink-0')
+               cls='navbar bg-base-200 shadow px-4 flex flex-wrap items-center justify-between gap-y-1 shrink-0')
 
 
 # %% ../nbs/01_cells.ipynb #c747ff8e
@@ -1335,7 +1340,7 @@ def select_delta(delta:int) -> tuple:
 # %% ../nbs/01_cells.ipynb #74dfa5a1
 @rt
 def insert(where:str) -> tuple:
-    "Insert a new blank cell above or below the current selection -- the a/b hotkeys. Inserts the new cell out-of-band next to its anchor, and refreshes the previously-selected cell (to drop its highlight ring) rather than re-rendering the whole notebook."
+    "Insert a new blank cell above or below the current selection -- the a/b hotkeys. The new cell's type matches the selected cell's own type (falling back to the composer's current type if nothing's selected, or if the selection is an Assistant cell, which isn't directly authorable). Inserts the new cell out-of-band next to its anchor, and refreshes the previously-selected cell (to drop its highlight ring) rather than re-rendering the whole notebook."
     old_sel = nb.selected
     i = nb.sel_index()
     if i is None:
@@ -1343,8 +1348,9 @@ def insert(where:str) -> tuple:
         nb.selected = new.id
         return (_oob('beforeend:#notebook', render_cell(new)),)
     anchor_id = nb.cells[i].id
+    ctype = nb.cells[i].ctype if nb.cells[i].ctype in CTYPES else nb.compose_type
     pos = i if where == 'above' else i+1
-    new = nb.insert_at(pos, nb.compose_type, '')
+    new = nb.insert_at(pos, ctype, '')
     nb.selected = new.id
     swap = 'beforebegin' if where == 'above' else 'afterend'
     parts = [_oob(f'{swap}:#cell-{anchor_id}', render_cell(new))]
@@ -1352,6 +1358,34 @@ def insert(where:str) -> tuple:
     if old_c is not None: parts.append(render_cell(old_c, oob=True))
     return tuple(parts)
 
+
+# %% ../nbs/01_cells.ipynb #837d91d7
+@rt
+def pull_code_blocks() -> tuple:
+    "The 'w' hotkey: copy every fenced code block out of the selected Assistant reply (or its paired Prompt) into new Code cells directly below it, in order -- a low-friction way to try running code an LLM suggested without retyping it. No-op if nothing's selected or there's no Assistant reply with code fences."
+    old_sel = nb.selected
+    if old_sel is None: return ()
+    c = nb.get(old_sel)
+    if c is not None and c.ctype == 'prompt':
+        i = nb.index(c.id)
+        nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+        c = nxt if nxt and nxt.ctype == 'assistant' else None
+    if c is None or c.ctype != 'assistant': return ()
+    blocks = re.findall(r'```[^\n]*\n(.*?)```', c.source, re.DOTALL)
+    if not blocks: return ()
+    pos = nb.index(c.id) + 1
+    anchor_id = c.id
+    parts, first_id = [], None
+    for block in blocks:
+        new = nb.insert_at(pos, 'code', block.rstrip('\n'))
+        pos += 1
+        parts.append(_oob(f'afterend:#cell-{anchor_id}', render_cell(new)))
+        anchor_id = new.id
+        if first_id is None: first_id = new.id
+    nb.selected = first_id
+    old_c = nb.get(old_sel) if old_sel != nb.selected else None
+    if old_c is not None: parts.append(render_cell(old_c, oob=True))
+    return tuple(parts)
 
 # %% ../nbs/01_cells.ipynb #e8bf81f9
 @rt

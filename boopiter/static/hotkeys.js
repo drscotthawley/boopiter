@@ -55,6 +55,7 @@
       case 'x': act('/cut_selected'); break;
       case 'c': htmx.ajax('POST', '/copy_selected', {swap:'none'}); break;
       case 'v': act('/paste_selected'); break;
+      case 'w': act('/pull_code_blocks'); break;
       case 'd': { const n = Date.now();
         if (n - lastD < 500) { lastD = 0; act('/del_selected'); }
         else { lastD = n; handled = false; }
