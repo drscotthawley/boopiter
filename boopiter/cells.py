@@ -32,8 +32,8 @@ from IPython.utils.capture import capture_output
 from datetime import datetime
 import nbformat as _nbf
 from lisette import *
-from .llm import *  # get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
-from .llm import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llm.py's __all__, so import * won't bring them in
+from .llms import *  # get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
+from .llms import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llms.py's __all__, so import * won't bring them in
 
 
 # %% ../nbs/01_cells.ipynb #c7250022
