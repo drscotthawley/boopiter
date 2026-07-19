@@ -10,12 +10,12 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'code_view', 'code_editor',
            'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook',
            'load_notebook', 'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu',
-           'file_browser_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse',
-           'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel', 'run_all',
-           'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell',
-           'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell',
-           'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
+           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending',
+           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
+           'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected',
+           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time
@@ -25,10 +25,12 @@ from fasthtml.common import *
 from fasthtml.jupyter import *
 import fasthtml.components as fh
 from fasthtml.svg import Path as SvgPath  # fastcore's pathlib.Path shadows fasthtml's svg <path> element otherwise
+from fasthtml.svg import G as SvgG  # groups a sub-path so it can be scaled independently of its parent icon
 from toolslm.shell import get_shell
 from datetime import datetime
 import nbformat as _nbf
 from lisette import *
+
 
 # %% ../nbs/01_cells.ipynb #c7250022
 # Define the path to the static directory
@@ -338,6 +340,9 @@ BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
 
 # %% ../nbs/01_cells.ipynb #e1ecadf2
 # heroicons (outline, 1.5 stroke) -- https://heroicons.com
+# Each icon is a tuple of paths; a path can be a plain 'd' string, or (d, scale) to render that
+# one sub-path in its own scaled group (about the 24x24 center) -- used for x-circle/play-circle
+# so their inner glyph can be enlarged without also blowing up the surrounding circle.
 ICONS = {
     'copy':          ('M8.25 9V5.25A2.25 2.25 0 0 1 10.5 3h6a2.25 2.25 0 0 1 2.25 2.25v13.5A2.25 2.25 0 0 1 16.5 21h-6a2.25 2.25 0 0 1-2.25-2.25V15m-3 0-3-3m0 0 3-3m-3 3H15',),
     'eye':           ('M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z',
@@ -347,22 +352,30 @@ ICONS = {
     'arrow-up':      ('M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18',),
     'arrow-down':    ('M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3',),
     'arrow-path':    ('M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99',),
-    'x-circle':      ('m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',),
+    'x-circle':      (('m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5', 1.35),
+                       'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z'),
     'play':          ('M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z',),
     'play-circle':   ('M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
-                       'M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z'),
+                       ('M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z', 1.35)),
     'bookmark':      ('M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z',),
     'bars-3':        ('M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5',),
     'folder':        ('M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z',),
     'document-text': ('M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',),
+    'question-mark-circle': ('M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z',),
 }  # heroicon name -> tuple of SVG path 'd' attributes
+
 
 # %% ../nbs/01_cells.ipynb #df3d9ee3
 def Icon(name:str, cls:str='size-4') -> FT:
-    "A heroicons outline SVG, inlined so `stroke='currentColor'` matches the button's text color."
-    return fh.Svg(*[SvgPath(stroke_linecap='round', stroke_linejoin='round', d=d) for d in ICONS[name]],
+    "A heroicons outline SVG, inlined so `stroke='currentColor'` matches the button's text color. Each path in ICONS[name] is either a plain 'd' string, or an (d, scale) pair -- the latter renders that sub-path inside its own group, scaled about the 24x24 viewBox center, so it can be enlarged independently of the rest of the icon (e.g. x-circle's X, play-circle's triangle)."
+    def render(item):
+        d, scale = item if isinstance(item, tuple) else (item, 1)
+        p = SvgPath(stroke_linecap='round', stroke_linejoin='round', d=d)
+        return SvgG(p, transform=f'translate(12,12) scale({scale}) translate(-12,-12)') if scale != 1 else p
+    return fh.Svg(*[render(item) for item in ICONS[name]],
                   xmlns='http://www.w3.org/2000/svg', fill='none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
+
 
 # %% ../nbs/01_cells.ipynb #d37bf5b4
 def IconBtn(name:str, title:str, **kw) -> FT:
@@ -690,6 +703,40 @@ def file_browser_modal() -> FT:
         id='file-modal', cls='modal')
 
 
+# %% ../nbs/01_cells.ipynb #41ad47aa
+def help_modal() -> FT:
+    "Keyboard-shortcuts cheat sheet, opened by the '?' button in the top bar. Same modal/backdrop pattern as file_browser_modal()."
+    command_mode = [
+        ('j / ↓ , k / ↑', 'Select the next / previous cell'),
+        ('a', 'Insert a new cell above the selection'),
+        ('b', 'Insert a new cell below the selection'),
+        ('y', 'Change the selected cell to Code'),
+        ('m', 'Change the selected cell to Note'),
+        ('r', 'Change the selected cell to Raw'),
+        ('c', 'Copy the selected cell'),
+        ('x', 'Cut the selected cell'),
+        ('v', 'Paste after the selected cell'),
+        ('d d', 'Delete the selected cell (press d twice)'),
+        ('s', 'Save the notebook'),
+    ]
+    editing_mode = [
+        ('Shift / Ctrl / Cmd + Enter', 'Save (and run) the cell'),
+        ('Ctrl / Cmd + /', 'Toggle line comments'),
+        ('Shift + Ctrl / Cmd + -', 'Split the cell at the cursor'),
+    ]
+    def section(title, pairs):
+        return [Div(title, cls='text-xs font-semibold opacity-60 mt-3 mb-1 first:mt-0')] + [
+            Div(Kbd(k, cls='kbd kbd-sm'), Span(v), cls='flex items-center gap-3 py-1') for k, v in pairs]
+    return Dialog(
+        Div(
+            Div('Keyboard shortcuts', cls='font-semibold mb-2'),
+            *section('Command mode (click a cell to select it)', command_mode),
+            *section('While editing a cell', editing_mode),
+            Div(Form(fh.Button('Close', cls='btn btn-sm'), method='dialog'), cls='modal-action'),
+            cls='modal-box'),
+        Form(fh.Button('close', cls='cursor-default'), method='dialog', cls='modal-backdrop'),
+        id='help-modal', cls='modal')
+
 # %% ../nbs/01_cells.ipynb #8392ed2d
 def top_bar() -> FT:
     "The whole navbar: file menu + logo + filename on the left, model picker + kernel/theme controls on the right."
@@ -697,16 +744,24 @@ def top_bar() -> FT:
                 Span('boopiter', cls='font-bold text-lg'),
                 Span('/', cls='opacity-40'), fname_display(),
                 cls='flex items-center gap-2')
+    # 19px landed between size-4 (16px, too small next to the moon/sun) and size-5 (20px, ended up
+    # looking bigger than the moon/sun -- these are stroked outline icons vs. theme_swap()'s filled
+    # ones, so the same box reads heavier); 18px still read as closer to the smaller end.
+    icon_cls = 'size-[19px]'
     ctrls = Div(
         model_dropdown(),
-        fh.Button(Icon('x-circle'), title='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('question-mark-circle', cls=icon_cls), title='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm',
+                  onclick="document.getElementById('help-modal').showModal()"),
+        fh.Button(Icon('x-circle', cls=icon_cls), title='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm',
                   hx_post=interrupt_kernel, hx_swap='none'),
-        fh.Button(Icon('arrow-path'), title='Restart kernel', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('arrow-path', cls=icon_cls), title='Restart kernel', cls='btn btn-ghost btn-circle btn-sm',
                   hx_post=restart_kernel, hx_swap='none'),
-        fh.Button(Icon('play-circle'), title='Run all code cells', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('play-circle', cls=icon_cls), title='Run all code cells', cls='btn btn-ghost btn-circle btn-sm',
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
         theme_swap(), cls='flex items-center gap-1')
-    return Div(brand, ctrls, file_browser_modal(), cls='navbar bg-base-200 shadow px-4 flex justify-between shrink-0')
+    return Div(brand, ctrls, file_browser_modal(), help_modal(),
+               cls='navbar bg-base-200 shadow px-4 flex justify-between shrink-0')
+
 
 # %% ../nbs/01_cells.ipynb #c747ff8e
 @rt('/_boopiter_ping')

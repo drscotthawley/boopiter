@@ -74,3 +74,11 @@ You can also aunch and pre-load a notebook:
 ## Screenshot
 
 ![screenshot](https://github.com/drscotthawley/boopiter/blob/main/images/screenshot.png?raw=true)
+
+## Known Issues / Roadmap
+
+Rough priority order, top = most impactful.
+
+- [ ] **Prompt cells are slow and lose focus.** Editing/inserting a prompt cell and running it doesn’t scroll it into view – you have to hunt for it on screen. This makes prompt cells unpleasant to use in practice. Likely fix: whenever a cell’s content changes (esp. after a run), scroll the viewport so that cell is visible.
+- [ ] General focus/scroll behavior is unreliable across the notebook, not just for prompt cells – worth a broader pass once the prompt-cell case is fixed.
+- [ ] Code cell outputs are text-only (with some color support). A real Jupyter notebook can render matplotlib figures, IPython HTML output, and interactive widgets like tqdm progress bars. Would need a proper output-type dispatch (image/html/etc.) instead of assuming text.
