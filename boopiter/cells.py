@@ -261,14 +261,16 @@ CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is 
 class Cell:
     "One notebook cell: its type, source text, any output, and a few UI/export-related flags."
     def __init__(self, id:int, ctype:str, source:str, output:Any=None, visible:bool=True,
-                 model:str|None=None, nb_id:str|None=None, export:bool=False):
+                 model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None):
         "Create a cell with the given type, source text, and optional output/visibility/model/id/export state."
         self.id,self.ctype,self.source = id,ctype,source
         self.output,self.visible = output,visible
         self.model = model  # which LLM produced this (assistant cells only)
         self.nb_id = nb_id  # the .ipynb file's own cell id (nbformat), preserved across saves so git diffs stay clean
         self.export = export  # nbdev '#| export' -- kept as a flag, not embedded text; see save_notebook/load_notebook
+        self.details = details  # assistant cells only: raw HTML <details> block (model/tokens/reasoning) shown above the reply -- kept OUT of source so it never pollutes llm_context()
         self.ts = datetime.now().strftime('%I:%M:%S %p')
+
 
 # %% ../nbs/01_cells.ipynb #39f24354
 class Notebook:
@@ -282,17 +284,17 @@ class Notebook:
         self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
 
     def insert_at(self, pos:int, ctype:str, source:str, output:Any=None, visible:bool=True,
-                  model:str|None=None, nb_id:str|None=None, export:bool=False) -> Cell:
+                  model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None) -> Cell:
         "Create a new cell of type `ctype` and insert it at list index `pos`."
         self._nid += 1
-        c = Cell(self._nid, ctype, source, output, visible, model, nb_id, export)
+        c = Cell(self._nid, ctype, source, output, visible, model, nb_id, export, details)
         self.cells.insert(pos, c)
         return c
 
     def add(self, ctype:str, source:str, output:Any=None, visible:bool=True,
-            model:str|None=None, nb_id:str|None=None, export:bool=False) -> Cell:
+            model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None) -> Cell:
         "Create a new cell of type `ctype` and append it to the end of the notebook."
-        return self.insert_at(len(self.cells), ctype, source, output, visible, model, nb_id, export)
+        return self.insert_at(len(self.cells), ctype, source, output, visible, model, nb_id, export, details)
 
     def index(self, id:int) -> int|None:
         "The list index of the cell with this `id`, or None if it's not present."
@@ -343,7 +345,8 @@ class Notebook:
 
     def _snapshot(self, lo:int, hi:int) -> list[dict]:
         "Plain-dict copies of cells[lo:hi+1], for the clipboard."
-        return [{'ctype':c.ctype,'source':c.source,'output':c.output,'visible':c.visible,'model':c.model,'export':c.export}
+        return [{'ctype':c.ctype,'source':c.source,'output':c.output,'visible':c.visible,'model':c.model,
+                 'export':c.export,'details':c.details}
                 for c in self.cells[lo:hi+1]]
 
     def copy_range(self, id:int) -> None:
@@ -370,7 +373,7 @@ class Notebook:
         pasted = []
         for snap in self.clipboard:
             pasted.append(self.insert_at(pos, snap['ctype'], snap['source'], snap['output'], snap['visible'],
-                                          snap['model'], export=snap.get('export', False)))
+                                          snap['model'], export=snap.get('export', False), details=snap.get('details')))
             pos += 1
         self.selected = pasted[0].id
         return pasted
@@ -419,13 +422,26 @@ def _call(self:Chat, msg:str|None=None, prefill:str|None=None, temp:float|None=N
     finally: self.tool_schemas = _orig_tools
 
 # %% ../nbs/01_cells.ipynb #834cf2bc
-def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None) -> str:
-    "Send a prompt to the LLM and return its response. TODO: can we stream the response rather than wait for as a final big chunk?"
+def _reply_details_html(response, msg) -> str:
+    "A collapsible <details> block summarizing an LLM call's metadata (model, finish reason, token counts, tool calls, reasoning) -- not part of the reply's actual content, kept out of Cell.source (see Cell.details) so it's never sent back to the model as context, and shown collapsed, in gray, above the real text. onclick=stopPropagation keeps a click on <summary> from also bubbling into the cell's click-anywhere-to-edit handler."
+    u = response.usage
+    rows = [('Model', response.model), ('Finish reason', response.choices[0].finish_reason)]
+    if u: rows.append(('Tokens', f'{u.prompt_tokens} prompt + {u.completion_tokens} completion = {u.total_tokens} total'))
+    if msg.tool_calls: rows.append(('Tool calls', ', '.join(tc.function.name for tc in msg.tool_calls)))
+    items = ''.join(f'<li>{k}: {v}</li>' for k, v in rows)
+    reasoning = f'<pre style="white-space:pre-wrap">{msg.reasoning_content}</pre>' if getattr(msg, 'reasoning_content', None) else ''
+    return (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
+            f'<ul>{items}</ul>{reasoning}</details>')
+
+def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None) -> tuple[str,str]:
+    "Send a prompt to the LLM; returns (content, details_html) -- the reply text itself, and a separate collapsible <details> block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. TODO: can we stream the response rather than wait for as a final big chunk?"
     # _skip_mcp_handler avoids litellm's MCP-proxy import chain (needs fastapi/orjson) that we don't use.
     # Drop it (and re-add fastapi/orjson to pyproject.toml) if/when we actually want MCP tool support.
     chat = Chat(model, tools=tools or [], callkw={'_skip_mcp_handler': True}) # FYI: this makes a fresh stateless context each time. is that what we want?
     response = chat(context)
-    return contents(response).content
+    msg = contents(response)
+    return msg.content, _reply_details_html(response, msg)
+
 
 # %% ../nbs/01_cells.ipynb #47866bbf
 def add_tool(fn:callable) -> callable:
@@ -605,7 +621,9 @@ def type_dropdown(c:Cell) -> FT:
 def cell_header(c:Cell, running:bool=False) -> FT:
     "The top row of a cell: type dropdown, id/timestamp, and the toolbar. `running=True` (used by pending_code_cell() while a background execution is still in flight) adds a pulsing 'Running...' indicator that disappears once the cell finishes, whether it succeeded or errored. flex-wrap lets the toolbar drop to its own line on narrow (mobile) viewports instead of squeezing/overlapping."
     rest = f': {c.id}' + (f' ({c.ts})' if c.ctype in ('code','assistant') else '')
-    if c.ctype == 'assistant' and c.model: rest += f' \xb7 {c.model}'
+    # Model name lives in the Reply details block now (see Cell.details) -- only fall back to
+    # showing it here for older cells saved before that existed, so the header stays clean.
+    if c.ctype == 'assistant' and c.model and not c.details: rest += f' \xb7 {c.model}'
     parts = [rest]
     if running:
         parts.append(Span(' Running...', cls='text-cyan-400 animate-pulse font-bold'))
@@ -617,12 +635,16 @@ def cell_header(c:Cell, running:bool=False) -> FT:
 
 # %% ../nbs/01_cells.ipynb #79fd4204
 def cell_body(c:Cell) -> FT:
-    "Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_view()/code_editor()."
+    "Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_view()/code_editor(). An Assistant cell with call metadata (Cell.details) shows it in a collapsed <details> block above the reply."
+    details = NotStr(c.details) if (c.ctype == 'assistant' and c.details) else None
     if not c.source.strip():  # otherwise an empty cell has nothing visible to click to start editing
-        return Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')
-    if c.ctype in ('note', 'prompt', 'assistant'):  # markdown + KaTeX + HTML + images + highlighted code fences
-        return Div(c.source, cls='marked prose max-w-none')
-    return Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
+        main = Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')
+    elif c.ctype in ('note', 'prompt', 'assistant'):  # markdown + KaTeX + HTML + images + highlighted code fences
+        main = Div(c.source, cls='marked prose max-w-none')
+    else:
+        main = Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
+    return Div(details, main, cls='flex flex-col gap-1') if details is not None else main
+
 
 # %% ../nbs/01_cells.ipynb #8fc13eb4
 def _cell_outer(c:Cell, *content, oob=None, **extra) -> FT:
@@ -799,7 +821,7 @@ def save_notebook(path:str|Path|None=None) -> Path:
     path = Path(path) if path else Path.cwd()/f'{nb.name}.ipynb'
     doc = _nbf.v4.new_notebook()
     for c in nb.cells:
-        meta = {'boopiter': {'ctype': c.ctype, 'visible': c.visible}}
+        meta = {'boopiter': {'ctype': c.ctype, 'visible': c.visible, 'details': c.details}}
         kind = _BOOP2NB.get(c.ctype, 'raw')
         idkw = {'id': c.nb_id} if c.nb_id else {}
         src = f'#| export\n{c.source}' if (c.ctype == 'code' and c.export) else c.source
@@ -838,7 +860,8 @@ def load_notebook(path:str|Path) -> Notebook:
         src, exported = cell.source, False
         if ctype == 'code' and _has_export(src):
             exported, src = True, _strip_export(src)
-        nb.add(ctype, src, output=output, visible=meta.get('visible', True), nb_id=cell.get('id'), export=exported)
+        nb.add(ctype, src, output=output, visible=meta.get('visible', True), nb_id=cell.get('id'),
+               export=exported, details=meta.get('details'))
     nb.name = str(path.with_suffix(''))  # keep the directory, only strip .ipynb
     return nb
 
@@ -1173,18 +1196,19 @@ def run_prompt_cell(id:int) -> Cell|None:
     c = nb.get(id)
     if not c or c.ctype != 'prompt': return None
     if nb.model:
-        try: reply = prompt_llm(llm_context(nb, c.id), model=nb.model, tools=nb.tools)
-        except Exception as e: reply = f'(error calling {nb.model}: {e})'
+        try: reply, details = prompt_llm(llm_context(nb, c.id), model=nb.model, tools=nb.tools)
+        except Exception as e: reply, details = f'(error calling {nb.model}: {e})', None
     else:
-        reply = stub_reply(nb, c.source)
+        reply, details = stub_reply(nb, c.source), None
     i = nb.index(c.id)
     nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
     if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model = reply, nb.model
+        nxt.source, nxt.model, nxt.details = reply, nb.model, details
         nxt.ts = datetime.now().strftime('%I:%M:%S %p')
     else:
-        nxt = nb.insert_at(i+1, 'assistant', reply, model=nb.model)
+        nxt = nb.insert_at(i+1, 'assistant', reply, model=nb.model, details=details)
     return nxt
+
 
 # %% ../nbs/01_cells.ipynb #dcb4a2e8
 def pending_cell(prompt_id:int, oob_swap:str=None) -> FT:
