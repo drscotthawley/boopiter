@@ -10,13 +10,13 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
            'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
-           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'file_browser_modal',
-           'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse',
-           'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel', 'run_all',
-           'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell',
-           'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell',
-           'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'context_menu',
+           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
+           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending',
+           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
+           'move_cell', 'select', 'select_delta', 'insert', 'del_selected', 'cut_selected', 'copy_selected',
+           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -883,9 +883,9 @@ def set_model(model:str) -> str:
     return ''
 
 # %% ../nbs/01_cells.ipynb #9977fc97
-def file_menu() -> FT:
-    "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
-    items = [
+def _file_menu_items() -> list:
+    "The New/Open/Save/Download/Restart Server actions shared by file_menu() (the hamburger dropdown) and context_menu() (the right-click popup) -- one source of truth so the two stay identical."
+    return [
         Li(fh.A('New', href=new_notebook.to(),
                 onclick="return confirm('Discard the current notebook and start a new one?')")),
         Li(fh.A('Open', onclick="document.getElementById('file-modal').showModal()",
@@ -894,10 +894,19 @@ def file_menu() -> FT:
         Li(fh.A('Download', href=download.to())),
         Li(fh.A('Restart Server', href='javascript:void(0)', onclick='boopRestartServer()')),
     ]
+
+def file_menu() -> FT:
+    "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
     return Div(
         Div(Icon('bars-3'), tabindex='0', role='button', cls='btn btn-ghost btn-circle btn-sm'),
-        Ul(*items, tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
+        Ul(*_file_menu_items(), tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
         cls='dropdown dropdown-bottom')
+
+def context_menu() -> FT:
+    "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
+    return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
+              cls='menu bg-base-200 rounded-box z-50 w-40 p-1 shadow fixed hidden')
+
 
 # %% ../nbs/01_cells.ipynb #3a2b61f9
 def file_browser_modal() -> FT:
@@ -974,7 +983,7 @@ def top_bar() -> FT:
         fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
         theme_swap(), cls='flex items-center gap-1')
-    return Div(brand, ctrls, file_browser_modal(), help_modal(),
+    return Div(brand, ctrls, file_browser_modal(), help_modal(), context_menu(),
                cls='navbar bg-base-200 shadow px-4 flex justify-between shrink-0')
 
 

@@ -41,3 +41,21 @@ document.addEventListener('DOMContentLoaded', function(){
   if(cb) cb.checked = dark;
   boopApplyTheme(dark);
 });
+
+// Right-click anywhere -> the same New/Open/Save/Download/Restart Server menu as the hamburger
+// (see context_menu() in cells.py), positioned at the cursor. Any click (an item, or elsewhere)
+// closes it again.
+document.addEventListener('contextmenu', function(e){
+  var menu = document.getElementById('context-menu');
+  if(!menu) return;
+  e.preventDefault();
+  menu.classList.remove('hidden');
+  var w = menu.offsetWidth || 160, h = menu.offsetHeight || 200;
+  menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - w - 4)) + 'px';
+  menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - h - 4)) + 'px';
+});
+document.addEventListener('click', function(e){
+  var menu = document.getElementById('context-menu');
+  if(!menu || menu.classList.contains('hidden')) return;
+  menu.classList.add('hidden');
+});
