@@ -6,18 +6,17 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'get_model_list', 'prompt_llm', 'add_tool',
-           'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
-           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
-           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
-           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'context_menu',
-           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
-           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'set_type', 'run_prompt_cell', 'pending_cell', 'run_prompt_pending',
-           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
-           'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected',
-           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
-           'sync_cell']
+           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'get_model_list', 'prompt_llm',
+           'pending_prompt_cell', 'run_prompt_poll', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon',
+           'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'render_output_blocks', 'code_view',
+           'code_editor', 'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap',
+           'save_notebook', 'load_notebook', 'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu',
+           'context_menu', 'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css',
+           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename',
+           'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type', 'add_cell', 'submit_cell', 'split',
+           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
+           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
+           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -442,6 +441,78 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|
     msg = contents(response)
     return msg.content, _reply_details_html(response, msg)
 
+
+# %% ../nbs/01_cells.ipynb #104800db
+_prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming a reply, if any -- parallel to _run_state (code), not shared with it: a code cell and a prompt reply use different resources and can run at the same time.
+
+def _run_prompt_bg(context:str, model:str, tools:list, state:_RunState) -> None:
+    "Runs in a background thread: streams the LLM reply token-by-token into state.buffer, then sets state.blocks = (content, details_html) once the final full response arrives. See prompt_llm() for the non-streaming equivalent (still used by run_all-style batch paths, if any)."
+    try:
+        chat = Chat(model, tools=tools or [], callkw={'_skip_mcp_handler': True})
+        for chunk in chat(context, stream=True):
+            if hasattr(chunk.choices[0], 'message'):  # the final item -- a full ModelResponse, not a delta
+                msg = contents(chunk)
+                state.blocks = (msg.content, _reply_details_html(chunk, msg))
+            else:
+                delta = chunk.choices[0].delta.content
+                if delta: state.buffer.append(delta)
+    except KeyboardInterrupt:
+        state.blocks = (''.join(state.buffer) + '\n\n*(interrupted)*', None)
+    except Exception as e:
+        state.blocks = (f'(error calling {model}: {e})', None)
+    state.done = True
+
+def _start_prompt_run(prompt_id:int) -> None:
+    "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make)."
+    global _prompt_state
+    c = nb.get(prompt_id)
+    state = _RunState(prompt_id)
+    if nb.model:
+        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), nb.model, nb.tools, state), daemon=True)
+        _prompt_state = state
+        state.thread.start()
+    else:
+        state.blocks = (stub_reply(nb, c.source), None)
+        state.done = True
+        _prompt_state = state
+
+def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
+    "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
+    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
+    parts = [Span('Assistant', cls='font-semibold text-sm'), Span(' Tricky...', cls='text-cyan-400 animate-pulse text-[15px] ml-1')]
+    body = [Div(*parts, cls='flex items-center gap-1')]
+    if text:
+        body.append(Pre(text, cls='text-sm whitespace-pre-wrap mt-1 opacity-80'))
+    return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
+               hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
+               hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
+
+def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
+    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
+    c = nb.get(prompt_id)
+    if not c or c.ctype != 'prompt': return None
+    i = nb.index(c.id)
+    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+    if nxt is not None and nxt.ctype == 'assistant':
+        nxt.source, nxt.model, nxt.details = content, nb.model, details
+        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
+    else:
+        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.model, details=details)
+    return nxt
+
+@rt
+def run_prompt_poll(id:int) -> FT|str:
+    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
+    global _prompt_state
+    st = _prompt_state
+    if st is None or st.cell_id != id:
+        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
+    if not st.done:
+        return pending_prompt_cell(id, ''.join(st.buffer))
+    content, details = st.blocks
+    _prompt_state = None
+    c2 = _finalize_prompt_reply(id, content, details)
+    return render_cell(c2) if c2 else ''
 
 # %% ../nbs/01_cells.ipynb #47866bbf
 def add_tool(fn:callable) -> callable:
@@ -1172,14 +1243,14 @@ def run_all() -> FT:
 # %% ../nbs/01_cells.ipynb #76a633a6
 @rt
 def interrupt_kernel() -> str:
-    "Best-effort interrupt: inject a KeyboardInterrupt into the currently-running background thread, if any (CPython's PyThreadState_SetAsyncExc, the same low-level trick real kernels use for SIGINT-based interrupts). It fires at the interrupted thread's next bytecode boundary, so it reliably breaks ordinary Python loops (e.g. a tqdm-wrapped for-loop) but can't preempt a single blocking C call already in flight."
-    st = _run_state
-    if st is not None and st.thread is not None and st.thread.is_alive():
-        import ctypes
-        tid = ctypes.c_long(st.thread.ident)
-        res = ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, ctypes.py_object(KeyboardInterrupt))
-        if res > 1:  # affected more than one thread -- back it out
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, None)
+    "Best-effort interrupt: inject a KeyboardInterrupt into whichever background thread(s) are currently running -- a code cell (_run_state) and/or a streaming Prompt reply (_prompt_state), since those are independent slots and could both be active. Uses CPython's PyThreadState_SetAsyncExc, the same low-level trick real kernels use for SIGINT-based interrupts. It fires at the interrupted thread's next bytecode boundary, so it reliably breaks ordinary Python loops (e.g. a tqdm-wrapped for-loop, or the token-by-token loop in _run_prompt_bg) but can't preempt a single blocking C call already in flight."
+    import ctypes
+    for st in (_run_state, _prompt_state):
+        if st is not None and st.thread is not None and st.thread.is_alive():
+            tid = ctypes.c_long(st.thread.ident)
+            res = ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, ctypes.py_object(KeyboardInterrupt))
+            if res > 1:  # affected more than one thread -- back it out
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, None)
     return ''
 
 
@@ -1190,46 +1261,9 @@ def set_type(t:str) -> FT:
     if t in CTYPES: nb.compose_type = t
     return composer()
 
-# %% ../nbs/01_cells.ipynb #24f45845
-def run_prompt_cell(id:int) -> Cell|None:
-    "(Re)send `id`'s prompt -- plus everything visible above it -- to the LLM; create or refresh the paired Assistant cell. Returns that cell."
-    c = nb.get(id)
-    if not c or c.ctype != 'prompt': return None
-    if nb.model:
-        try: reply, details = prompt_llm(llm_context(nb, c.id), model=nb.model, tools=nb.tools)
-        except Exception as e: reply, details = f'(error calling {nb.model}: {e})', None
-    else:
-        reply, details = stub_reply(nb, c.source), None
-    i = nb.index(c.id)
-    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-    if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model, nxt.details = reply, nb.model, details
-        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
-    else:
-        nxt = nb.insert_at(i+1, 'assistant', reply, model=nb.model, details=details)
-    return nxt
-
-
-# %% ../nbs/01_cells.ipynb #dcb4a2e8
-def pending_cell(prompt_id:int, oob_swap:str=None) -> FT:
-    "Placeholder shown right after a prompt is submitted; hx-trigger=load immediately fires the real (slow) LLM call and swaps itself out for the real Assistant cell once it replies. If `oob_swap` is given (an htmx hx-swap-oob spec like 'outerHTML:#cell-5' or 'afterend:#cell-5'), this placeholder is delivered out-of-band at that location instead of being the response's main swap target."
-    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
-    return Div('Assistant: Tricky...', id=f'pending-{prompt_id}',
-               cls='border-l-4 border-error pl-3 py-2 my-2 ml-8 opacity-60 italic',
-               hx_post=run_prompt_pending.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
-               hx_swap='outerHTML', hx_trigger='load', **kw)
-
-
-# %% ../nbs/01_cells.ipynb #2bfcd687
-@rt
-def run_prompt_pending(id:int) -> FT|str:
-    "Actually run a Prompt's pending LLM call and return the real Assistant cell, replacing the pending_cell() placeholder."
-    c2 = run_prompt_cell(id)
-    return render_cell(c2) if c2 else ''
-
 # %% ../nbs/01_cells.ipynb #a93ec690
 def add_cell(t:str, source:str) -> list[Cell]:
-    "Create a cell of type `t`: run it if code, just create it if prompt (its Assistant reply is added asynchronously via pending_cell). Returns the new cell(s)."
+    "Create a cell of type `t`: run it if code, just create it if prompt (its Assistant reply streams in asynchronously -- see _start_prompt_run/pending_prompt_cell). Returns the new cell(s)."
     if t == 'code':
         return [nb.add('code', source, output=run_code(source))]
     elif t == 'prompt':
@@ -1237,13 +1271,18 @@ def add_cell(t:str, source:str) -> list[Cell]:
     else:
         return [nb.add(t, source)]
 
+
 # %% ../nbs/01_cells.ipynb #4195ebb8
 @rt
 def submit_cell(source:str) -> tuple:
-    "Append only the new cell(s) to #notebook and reset the composer out-of-band, so untouched cells' editors are never re-created. A just-submitted Prompt gets a 'Thinking...' placeholder that fetches its own reply."
+    "Append only the new cell(s) to #notebook and reset the composer out-of-band, so untouched cells' editors are never re-created. A just-submitted Prompt gets a 'Tricky...' placeholder that streams its own reply."
     new = add_cell(nb.compose_type, source) if source.strip() else []
-    pending = [pending_cell(new[-1].id)] if new and nb.compose_type == 'prompt' else []
+    pending = []
+    if new and nb.compose_type == 'prompt':
+        _start_prompt_run(new[-1].id)
+        pending = [pending_prompt_cell(new[-1].id)]
     return *[render_cell(c) for c in new], *pending, composer(oob=True)
+
 
 # %% ../nbs/01_cells.ipynb #d590d406
 @rt
@@ -1251,8 +1290,12 @@ def split(source:str, pos:int) -> tuple:
     "Split the composer at the caret: head becomes a cell, tail stays in the composer."
     head, tail = source[:pos], source[pos:]
     new = add_cell(nb.compose_type, head) if head.strip() else []
-    pending = [pending_cell(new[-1].id)] if new and nb.compose_type == 'prompt' else []
+    pending = []
+    if new and nb.compose_type == 'prompt':
+        _start_prompt_run(new[-1].id)
+        pending = [pending_prompt_cell(new[-1].id)]
     return *[render_cell(c) for c in new], *pending, composer(draft=tail, oob=True)
+
 
 # %% ../nbs/01_cells.ipynb #0e3e3053
 @rt
@@ -1271,12 +1314,13 @@ def split_cell(id:int, pos:int) -> FT|tuple:
 # %% ../nbs/01_cells.ipynb #4fb284a3
 @rt
 def run_cell(id:int) -> FT:
-    "Run this cell (Code: kick off background execution and return a placeholder that streams its progress; Prompt: return a pending placeholder that fetches its own reply), so the caller can target just this cell instead of the whole notebook."
+    "Run this cell (Code: kick off background execution and return a placeholder that streams its progress; Prompt: kick off the LLM call and return a placeholder that streams the reply in), so the caller can target just this cell instead of the whole notebook."
     c = nb.get(id)
     if c and c.ctype == 'code':
         return _start_code_run(c)
     elif c and c.ctype == 'prompt':
-        return pending_cell(id)
+        _start_prompt_run(id)
+        return pending_prompt_cell(id)
     return render_nb()
 
 
@@ -1517,16 +1561,17 @@ def save_cell(id:int, source:str) -> FT|tuple:
     if c.ctype == 'code':
         return _start_code_run(c)
     elif c.ctype == 'prompt':
+        _start_prompt_run(id)
         i = nb.index(c.id)
         nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
         if nxt is not None and nxt.ctype == 'assistant':
-            # 'true'/'outerHTML' OOB swaps keep the tagged element itself, so pending_cell can carry the directive directly.
-            pend = pending_cell(id, oob_swap=f'outerHTML:#cell-{nxt.id}')
+            # 'true'/'outerHTML' OOB swaps keep the tagged element itself, so pending_prompt_cell can carry the directive directly.
+            pend = pending_prompt_cell(id, oob_swap=f'outerHTML:#cell-{nxt.id}')
         else:
             # Positional OOB swaps (afterend/beforebegin/beforeend) insert only the tagged element's
-            # *children* -- so pending_cell must be wrapped, not itself carry the hx-swap-oob attribute,
+            # *children* -- so pending_prompt_cell must be wrapped, not itself carry the hx-swap-oob attribute,
             # or its own id/hx-trigger="load" would be discarded on insertion. See _oob().
-            pend = _oob(f'afterend:#cell-{c.id}', pending_cell(id))
+            pend = _oob(f'afterend:#cell-{c.id}', pending_prompt_cell(id))
         return render_cell(c), pend
     return render_cell(c)
 
