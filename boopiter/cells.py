@@ -651,6 +651,8 @@ def cell_header(c):
 
 def cell_body(c):
     "Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_editor()."
+    if not c.source.strip():  # otherwise an empty cell has nothing visible to click to start editing
+        return Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')
     if c.ctype in ('note', 'prompt', 'assistant'):  # markdown + KaTeX + HTML + images + highlighted code fences
         return Div(c.source, cls='marked prose max-w-none')
     return Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
