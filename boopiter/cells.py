@@ -6,7 +6,7 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'run_code', 'Cell', 'Notebook',
-           'get_model_list', 'prompt_llm', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn',
+           'get_model_list', 'prompt_llm', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn',
            'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
            'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'file_browser_modal', 'top_bar',
@@ -17,7 +17,7 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell',
            'save_cell', 'sync_cell']
 
-# %% ../nbs/01_cells.ipynb #b46f85fe
+# %% ../nbs/01_cells.ipynb #9d4e42fa
 import os, shutil, subprocess, sys, threading, time
 from fastcore.utils import *
 from fasthtml.common import *
@@ -29,7 +29,7 @@ from datetime import datetime
 import nbformat as _nbf
 from lisette import *
 
-# %% ../nbs/01_cells.ipynb #4129e245
+# %% ../nbs/01_cells.ipynb #8f2968d7
 # Jupyter-style command-mode hotkeys. Fire only when no textarea/input is focused;
 # each maps to an htmx POST that re-renders #notebook.
 _HOTKEYS_JS = r"""
@@ -97,7 +97,7 @@ _HOTKEYS_JS = r"""
 })();
 """
 
-# %% ../nbs/01_cells.ipynb #21f7aaec
+# %% ../nbs/01_cells.ipynb #b5ad4e25
 # Tailwind's reset flattens markdown headings/lists; restore them for `.marked` content.
 _MARKED_CSS = """
 .marked h1{font-size:1.6rem;font-weight:700;margin:.4em 0}
@@ -119,7 +119,7 @@ _MARKED_CSS = """
 .CodeMirror-scroll{max-height:60vh}
 """
 
-# %% ../nbs/01_cells.ipynb #cffa85cc
+# %% ../nbs/01_cells.ipynb #a2512b38
 _EDIT_JS = r"""
 function boopSave(id){
   var cm = window['_boopcm_'+id];
@@ -232,7 +232,7 @@ function boopInitEditors(root){
 if(window.htmx) htmx.onLoad(boopInitEditors);
 """
 
-# %% ../nbs/01_cells.ipynb #e6f30d15
+# %% ../nbs/01_cells.ipynb #a11ef9c0
 _THEME_JS = r"""
 window._boopcms = window._boopcms || [];
 var _HLJS = {
@@ -240,13 +240,29 @@ var _HLJS = {
   light: 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/atom-one-light.min.css'
 };
 function boopApplyTheme(dark){
+  // The data-theme flip below is what you actually SEE (DaisyUI restyles via CSS instantly) --
+  // but JS blocks painting until this function returns, so re-theming every live CodeMirror
+  // instance (slow with many code cells open) was delaying that paint by up to ~1.5s. Do the
+  // visible part synchronously, defer the CodeMirror re-theme to right after so it can't block it.
   window._boopDark = dark;
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   var hl = document.getElementById('hljs-theme');
   if(hl) hl.href = dark ? _HLJS.dark : _HLJS.light;
-  window._boopcms.forEach(function(cm){ cm.setOption('theme', dark ? 'material-darker' : 'default'); });
-  if(window._boopComposerCM) window._boopComposerCM.setOption('theme', dark ? 'material-darker' : 'default');
   try { localStorage.setItem('boopDark', dark ? '1' : '0'); } catch(e){}
+  setTimeout(function(){
+    // Re-theme on-screen editors first (so the visible part of the page finishes fast), then
+    // let the browser paint, then catch up the rest -- rather than one big synchronous sweep.
+    var vh = window.innerHeight;
+    var onscreen = [], offscreen = [];
+    window._boopcms.forEach(function(cm){
+      var r = cm.getWrapperElement().getBoundingClientRect();
+      (r.bottom >= 0 && r.top <= vh ? onscreen : offscreen).push(cm);
+    });
+    var retheme = function(cm){ cm.setOption('theme', dark ? 'material-darker' : 'default'); };
+    onscreen.forEach(retheme);
+    if(window._boopComposerCM) retheme(window._boopComposerCM);
+    setTimeout(function(){ offscreen.forEach(retheme); }, 0);
+  }, 0);
 }
 function boopThemeToggle(cb){ boopApplyTheme(cb.checked); }
 document.addEventListener('DOMContentLoaded', function(){
@@ -258,7 +274,7 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 """
 
-# %% ../nbs/01_cells.ipynb #2537404a
+# %% ../nbs/01_cells.ipynb #ce80d7ed
 def _tw_header():
     "Use the precompiled static Tailwind build (from `_build_tailwind()`) if it exists; else fall back to the slower CDN JIT compiler. `__file__` isn't defined when nbdev-test executes this notebook directly (vs. a real module import), so fall back to cwd -- the .exists() check below fails safely either way."
     pkg_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
@@ -266,7 +282,7 @@ def _tw_header():
     if compiled.exists(): return Link(rel='stylesheet', href='/tailwind.css')
     return Script(src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4')
 
-# %% ../nbs/01_cells.ipynb #137abff0
+# %% ../nbs/01_cells.ipynb #7806bb1e
 _MARKDOWN_JS = r"""
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 import katex from "https://cdn.jsdelivr.net/npm/katex/dist/katex.mjs";
@@ -297,7 +313,7 @@ proc_htmx('.marked:not([data-md-done])', e => {
 });
 """
 
-# %% ../nbs/01_cells.ipynb #cec880e0
+# %% ../nbs/01_cells.ipynb #cc5a8a56
 daisy_hdrs = [
     Link(href='https://cdn.jsdelivr.net/npm/daisyui@5', rel='stylesheet', type='text/css'),
     _tw_header(),
@@ -321,12 +337,12 @@ daisy_hdrs = [
     Script(_EDIT_JS),
 ]
 
-# %% ../nbs/01_cells.ipynb #c44aa370
+# %% ../nbs/01_cells.ipynb #18deea7e
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
 rt  = app.route
 p   = partial(HTMX, app=app, host=None, port=None)
 
-# %% ../nbs/01_cells.ipynb #9ff1ab3d
+# %% ../nbs/01_cells.ipynb #82ffb05e
 _shell = get_shell()
 _shell.system = _shell.system_piped   # capture `!cmd` output into stdout
 
@@ -339,7 +355,7 @@ def run_code(src):
     if res.result is not None: return res.result
     return (res.stdout or '').replace('\r\n', '\n')
 
-# %% ../nbs/01_cells.ipynb #7bab4f59
+# %% ../nbs/01_cells.ipynb #d07c0352
 CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is generated
 
 class Cell:
@@ -350,13 +366,14 @@ class Cell:
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
 
-# %% ../nbs/01_cells.ipynb #e811ad03
+# %% ../nbs/01_cells.ipynb #ede64217
 class Notebook:
     def __init__(self):
         self.cells, self._nid, self.compose_type, self.selected = [], 0, 'code', None
         self.name = 'untitled'
         self.models, self.model = [], None  # available LLMs + the one currently selected in the top bar
         self.clipboard = []  # cell snapshots (plain dicts, not live Cells) for cut/copy/paste
+        self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
 
     def insert_at(self, pos, ctype, source, output=None, visible=True, model=None):
         self._nid += 1
@@ -449,7 +466,7 @@ nb = Notebook()
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
 
-# %% ../nbs/01_cells.ipynb #1ab8ac40
+# %% ../nbs/01_cells.ipynb #1d3dae0e
 def get_model_list(debug:bool=False): 
     "Get a list of supported (local) models"
     import httpx
@@ -459,7 +476,7 @@ def get_model_list(debug:bool=False):
         raise RuntimeError("No local LLM models found -- is Ollama running, and do you have any models pulled?")
     return ['ollama/'+m['model'] for m in models['models']]
 
-# %% ../nbs/01_cells.ipynb #1ddcd8c6
+# %% ../nbs/01_cells.ipynb #77707f3a
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
 # triggers a bug in litellm's MCP-handler codepath that returns a raw dict instead of a proper
 # response object (AttributeError: 'dict' object has no attribute 'choices'). Same issue hit by
@@ -483,8 +500,18 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools=[]):
     response = chat(context)
     return contents(response).content
 
+def add_tool(fn):
+    "Register `fn` as a tool the LLM can call on future Prompt-cell runs. Also usable as a decorator: `@add_tool`."
+    if not callable(fn):
+        raise TypeError(f'add_tool() expects a callable, got {fn!r}')
+    if fn not in nb.tools:
+        nb.tools.append(fn)
+    return fn
 
-# %% ../nbs/01_cells.ipynb #673e6cf5
+_shell.push({'nb': nb, 'add_tool': add_tool})  # so code cells can call add_tool(...)/inspect nb directly, no import needed
+
+
+# %% ../nbs/01_cells.ipynb #0ab6c8bb
 def llm_context(nb, cur_id=None):
     "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order."
     cutoff = len(nb.cells)
@@ -493,7 +520,7 @@ def llm_context(nb, cur_id=None):
         if i is not None: cutoff = i + 1
     return '\n'.join(f'[{c.ctype}] {c.source}' for c in nb.cells[:cutoff] if c.visible)
 
-# %% ../nbs/01_cells.ipynb #91ae9a62
+# %% ../nbs/01_cells.ipynb #789b130f
 def stub_reply(nb, prompt):
     "fake/placeholder reply in case llms aren't available (can still test gui)"
     n = sum(c.visible for c in nb.cells)
@@ -501,7 +528,7 @@ def stub_reply(nb, prompt):
     return (f'(stub) I can see {n} visible cell(s). You said: '
             f'"{prompt.strip()}". Wire a real model into stub_reply() later.')
 
-# %% ../nbs/01_cells.ipynb #f3f95353
+# %% ../nbs/01_cells.ipynb #99c9e249
 _PREFERRED_MODEL_SUBSTR = 'qwen2.5-coder'  # used if present, regardless of exact tag/version
 
 def ensure_models():
@@ -520,7 +547,7 @@ try:
 except: 
     print("WARNING: Can't test this cell in notebook, no app")
 
-# %% ../nbs/01_cells.ipynb #733695eb
+# %% ../nbs/01_cells.ipynb #5fb3156c
 BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
           'prompt':'border-error', 'assistant':'border-error'}
 
@@ -570,7 +597,7 @@ def _set_export(source, flag):
     return f'#| export\n{stripped}' if flag else stripped
 
 
-# %% ../nbs/01_cells.ipynb #40ab4455
+# %% ../nbs/01_cells.ipynb #6e802308
 def cell_toolbar(c):
     tgt = '#notebook'
     copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
@@ -597,7 +624,7 @@ def cell_toolbar(c):
     return Div(*btns, cls='flex gap-1 ml-auto')
 
 
-# %% ../nbs/01_cells.ipynb #f8a2d4b4
+# %% ../nbs/01_cells.ipynb #cc87c16e
 def type_dropdown(c):
     "Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell."
     if c.ctype == 'assistant':
@@ -671,7 +698,7 @@ def render_cell_edit(c):
 def render_nb():
     return Div(*[render_cell(c) for c in nb.cells], id='notebook', cls='flex flex-col')
 
-# %% ../nbs/01_cells.ipynb #45ec3104
+# %% ../nbs/01_cells.ipynb #958ceb2a
 def composer(draft='', oob=False):
     tabs = [fh.A(t.capitalize(),
                  cls=f'tab {"tab-active" if nb.compose_type==t else ""}',
@@ -693,7 +720,7 @@ def composer(draft='', oob=False):
 def render_app(draft=''):
     return Div(render_nb(), composer(draft), id='app')
 
-# %% ../nbs/01_cells.ipynb #7fbcdfd9
+# %% ../nbs/01_cells.ipynb #4d2c2d09
 # ---- top menu / control bar ----
 def theme_swap():
     "DaisyUI sun/moon swap; drives boopApplyTheme (default dark)."
@@ -960,7 +987,7 @@ def run_prompt_cell(id):
     c = nb.get(id)
     if not c or c.ctype != 'prompt': return None
     if nb.model:
-        try: reply = prompt_llm(llm_context(nb, c.id), model=nb.model)
+        try: reply = prompt_llm(llm_context(nb, c.id), model=nb.model, tools=nb.tools)
         except Exception as e: reply = f'(error calling {nb.model}: {e})'
     else:
         reply = stub_reply(nb, c.source)
@@ -1040,7 +1067,7 @@ def move_cell(id:int, delta:int):
     return render_nb()
 
 
-# %% ../nbs/01_cells.ipynb #14258130
+# %% ../nbs/01_cells.ipynb #ecd8ade0
 # --- command-mode (hotkey) routes ---
 @rt
 def select(id:int):
