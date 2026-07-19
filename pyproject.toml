@@ -25,6 +25,7 @@ dependencies = [
     "lisette",
     "httpx",
     "pytailwindcss",
+    "slmn @ git+https://github.com/drscotthawley/slmn.git",
 ]
 
 [project.urls]

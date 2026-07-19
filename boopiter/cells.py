@@ -32,7 +32,7 @@ from IPython.utils.capture import capture_output
 from datetime import datetime
 import nbformat as _nbf
 from lisette import *
-from .llms import *  # get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
+from .llms import *  # get_tool_list, get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
 from .llms import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llms.py's __all__, so import * won't bring them in
 
 
@@ -283,6 +283,7 @@ class Notebook:
         self.models, self.model = [], None  # available LLMs + the one currently selected in the top bar
         self.clipboard = []  # cell snapshots (plain dicts, not live Cells) for cut/copy/paste
         self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
+        self.use_slmn_tools = True  # include slmn's tools (get_tool_list()) alongside nb.tools -- toggled by a future GUI control
 
     def insert_at(self, pos:int, ctype:str, source:str, output:Any=None, visible:bool=True,
                   model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None) -> Cell:
@@ -417,7 +418,8 @@ def _start_prompt_run(prompt_id:int) -> None:
     c = nb.get(prompt_id)
     state = _RunState(prompt_id)
     if nb.model:
-        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), nb.model, nb.tools, state), daemon=True)
+        tools = get_tool_list(include_slmn=nb.use_slmn_tools) + nb.tools
+        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), nb.model, tools, state), daemon=True)
         _prompt_state = state
         state.thread.start()
     else:
