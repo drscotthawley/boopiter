@@ -7,13 +7,14 @@ Docs: https://drscotthawley.github.io/boopiter/core.html.md"""
 # %% auto #0
 __all__ = ['launch']
 
-# %% ../nbs/00_core.ipynb #1092df29
+# %% ../nbs/00_core.ipynb #74add773
 import os, subprocess, sys, time, urllib.request, urllib.error
 from pathlib import Path
 from typing import Annotated
 from fastcore.script import call_parse
 
-def _port_owner(port):
+# %% ../nbs/00_core.ipynb #bd69c1b0
+def _port_owner(port:int):
     "Return 'boopiter' if boopiter answers on `port`, 'other' if something else does, None if nothing does."
     try:
         with urllib.request.urlopen(f'http://localhost:{port}/_boopiter_ping', timeout=1.0) as r:
@@ -26,7 +27,8 @@ def _port_owner(port):
     except Exception:
         return 'other'   # some other failure mode -- be conservative, don't touch it
 
-def _kill_port(port):
+# %% ../nbs/00_core.ipynb #1dd82364
+def _kill_port(port:int):
     try:
         pids = subprocess.run(['lsof', '-ti', f'tcp:{port}'], capture_output=True, text=True).stdout.split()
     except FileNotFoundError:
@@ -34,6 +36,7 @@ def _kill_port(port):
     for pid in pids: subprocess.run(['kill', '-9', pid])
     if pids: time.sleep(0.3)
 
+# %% ../nbs/00_core.ipynb #bec08a04
 def _build_tailwind():
     "Precompile a static Tailwind CSS file once per launch, replacing the CDN's in-browser JIT compiler (which recompiles on every htmx DOM update -- a major source of per-interaction lag)."
     pkg_dir = Path(__file__).parent
@@ -46,6 +49,7 @@ def _build_tailwind():
     except Exception as e:
         print(f"Tailwind precompile failed ({e}); falling back to the slower CDN JIT build.", file=sys.stderr)
 
+# %% ../nbs/00_core.ipynb #1cfbef52
 @call_parse
 def launch(
     nbfile: Annotated[str, {'opt': False, 'nargs': '?'}] = None,  # .ipynb file to load on startup

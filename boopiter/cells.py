@@ -7,17 +7,17 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'run_code', 'Cell', 'Notebook',
            'get_model_list', 'prompt_llm', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn',
-           'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'code_editor', 'render_cell',
+           'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
            'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'file_browser_modal', 'top_bar',
            'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook',
            'restart_server', 'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'set_type',
-           'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'run_cell',
-           'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'del_selected',
-           'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell',
-           'save_cell', 'sync_cell']
+           'run_prompt_cell', 'pending_cell', 'run_prompt_pending', 'add_cell', 'submit_cell', 'split', 'split_cell',
+           'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert',
+           'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype',
+           'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
-# %% ../nbs/01_cells.ipynb #9d4e42fa
+# %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time
 from fastcore.utils import *
 from fasthtml.common import *
@@ -29,7 +29,7 @@ from datetime import datetime
 import nbformat as _nbf
 from lisette import *
 
-# %% ../nbs/01_cells.ipynb #8f2968d7
+# %% ../nbs/01_cells.ipynb #6fd1e39a
 # Jupyter-style command-mode hotkeys. Fire only when no textarea/input is focused;
 # each maps to an htmx POST that re-renders #notebook.
 _HOTKEYS_JS = r"""
@@ -97,7 +97,7 @@ _HOTKEYS_JS = r"""
 })();
 """
 
-# %% ../nbs/01_cells.ipynb #b5ad4e25
+# %% ../nbs/01_cells.ipynb #f2651546
 # Tailwind's reset flattens markdown headings/lists; restore them for `.marked` content.
 _MARKED_CSS = """
 .marked h1{font-size:1.6rem;font-weight:700;margin:.4em 0}
@@ -116,10 +116,9 @@ _MARKED_CSS = """
 .marked th,.marked td{border:1px solid #999;padding:.2em .5em}
 .marked img{max-width:100%}
 .CodeMirror{height:auto;border:1px solid #ccc;border-radius:.4rem;font-size:.85rem}
-.CodeMirror-scroll{max-height:60vh}
 """
 
-# %% ../nbs/01_cells.ipynb #a2512b38
+# %% ../nbs/01_cells.ipynb #07e66c76
 _EDIT_JS = r"""
 function boopSave(id){
   var cm = window['_boopcm_'+id];
@@ -170,6 +169,9 @@ function boopComposerSplit(cm){
   htmx.ajax('POST', '/split', {target:'#notebook', swap:'beforeend',
     values:{source: cm.getValue(), pos: cm.indexFromPos(cm.getCursor())}});
 }
+function boopSplitCell(id, pos){
+  htmx.ajax('POST', '/split_cell?id='+id, {target:'#notebook', swap:'outerHTML', values:{pos: pos}});
+}
 function boopMakeCM(ta, isComposer){
   var dark = window._boopDark !== false;
   var id = ta.getAttribute('data-cid');
@@ -179,7 +181,9 @@ function boopMakeCM(ta, isComposer){
       'Shift-Ctrl--': function(cm){ boopComposerSplit(cm); }, 'Shift-Cmd--': function(cm){ boopComposerSplit(cm); }
     } : {
       'Shift-Enter': function(){ boopSave(id); }, 'Ctrl-Enter': function(){ boopSave(id); }, 'Cmd-Enter': function(){ boopSave(id); },
-      'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); }
+      'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); },
+      'Shift-Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
+      'Shift-Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); }
     };
   var cm = CodeMirror.fromTextArea(ta, {
     mode:'python', theme: dark?'material-darker':'default',
@@ -224,15 +228,19 @@ function boopInitEditors(root){
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
       ta.addEventListener('keydown', function(e){
         if((e.shiftKey||e.ctrlKey||e.metaKey) && e.key === 'Enter'){ e.preventDefault(); boopSave(ta.getAttribute('data-cid')); }
+        else if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
+          e.preventDefault(); boopSplitCell(ta.getAttribute('data-cid'), ta.selectionStart);
+        }
       });
     }
   });
   boopRenderAnsi(scope);
+  if(window.boopHighlight) boopHighlight(scope);  // static code-cell views + note-cell fences alike
 }
 if(window.htmx) htmx.onLoad(boopInitEditors);
 """
 
-# %% ../nbs/01_cells.ipynb #a11ef9c0
+# %% ../nbs/01_cells.ipynb #a78604b5
 _THEME_JS = r"""
 window._boopcms = window._boopcms || [];
 var _HLJS = {
@@ -277,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 """
 
-# %% ../nbs/01_cells.ipynb #ce80d7ed
+# %% ../nbs/01_cells.ipynb #11437293
 def _tw_header():
     "Use the precompiled static Tailwind build (from `_build_tailwind()`) if it exists; else fall back to the slower CDN JIT compiler. `__file__` isn't defined when nbdev-test executes this notebook directly (vs. a real module import), so fall back to cwd -- the .exists() check below fails safely either way."
     pkg_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
@@ -285,7 +293,7 @@ def _tw_header():
     if compiled.exists(): return Link(rel='stylesheet', href='/tailwind.css')
     return Script(src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4')
 
-# %% ../nbs/01_cells.ipynb #7806bb1e
+# %% ../nbs/01_cells.ipynb #02a0e607
 _MARKDOWN_JS = r"""
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 import katex from "https://cdn.jsdelivr.net/npm/katex/dist/katex.mjs";
@@ -300,8 +308,9 @@ const processLatexEnvironments = (content) => content.replace(/\\begin{(\w+)}([\
 
 function boopHighlight(root){
     if (!window.hljs) return;
-    root.querySelectorAll('pre code').forEach(c => hljs.highlightElement(c));
+    root.querySelectorAll('pre code:not([data-highlighted])').forEach(c => hljs.highlightElement(c));
 }
+window.boopHighlight = boopHighlight;  // this file loads as an ES module, so expose it -- other (non-module) scripts call it too
 
 // proc_htmx (fasthtml-js) has no dedup of its own -- it refires on *every* htmx swap anywhere
 // on the page. Guard with :not([data-md-done]) so already-rendered cells are never re-parsed
@@ -316,7 +325,7 @@ proc_htmx('.marked:not([data-md-done])', e => {
 });
 """
 
-# %% ../nbs/01_cells.ipynb #cc5a8a56
+# %% ../nbs/01_cells.ipynb #b458fa66
 daisy_hdrs = [
     Link(href='https://cdn.jsdelivr.net/npm/daisyui@5', rel='stylesheet', type='text/css'),
     _tw_header(),
@@ -340,16 +349,18 @@ daisy_hdrs = [
     Script(_EDIT_JS),
 ]
 
-# %% ../nbs/01_cells.ipynb #18deea7e
+# %% ../nbs/01_cells.ipynb #74163e30
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
 rt  = app.route
 p   = partial(HTMX, app=app, host=None, port=None)
 
-# %% ../nbs/01_cells.ipynb #82ffb05e
+# %% ../nbs/01_cells.ipynb #3e5ac46a
 _shell = get_shell()
 _shell.system = _shell.system_piped   # capture `!cmd` output into stdout
 
-def run_code(src):
+
+# %% ../nbs/01_cells.ipynb #fa801f24
+def run_code(src:str) -> Any:
     "Execute `src` in the shared shell; return result, stdout, or an error string."
     res = _shell.run_cell(src)
     if res.error_in_exec is not None:
@@ -358,43 +369,61 @@ def run_code(src):
     if res.result is not None: return res.result
     return (res.stdout or '').replace('\r\n', '\n')
 
-# %% ../nbs/01_cells.ipynb #d07c0352
+# %% ../nbs/01_cells.ipynb #d4ec58e1
 CTYPES = ('code','note','prompt','raw')  # types you can author; 'assistant' is generated
 
+
+# %% ../nbs/01_cells.ipynb #2db6d070
 class Cell:
-    def __init__(self, id, ctype, source, output=None, visible=True, model=None):
+    "One notebook cell: its type, source text, any output, and a few UI/export-related flags."
+    def __init__(self, id:int, ctype:str, source:str, output:Any=None, visible:bool=True,
+                 model:str|None=None, nb_id:str|None=None, export:bool=False):
+        "Create a cell with the given type, source text, and optional output/visibility/model/id/export state."
         self.id,self.ctype,self.source = id,ctype,source
         self.output,self.visible = output,visible
         self.model = model  # which LLM produced this (assistant cells only)
+        self.nb_id = nb_id  # the .ipynb file's own cell id (nbformat), preserved across saves so git diffs stay clean
+        self.export = export  # nbdev '#| export' -- kept as a flag, not embedded text; see save_notebook/load_notebook
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
-
-# %% ../nbs/01_cells.ipynb #ede64217
+# %% ../nbs/01_cells.ipynb #39f24354
 class Notebook:
+    "The whole in-memory notebook: its cells, selection, clipboard, and app-level UI state."
     def __init__(self):
+        "Start a fresh, empty, untitled notebook."
         self.cells, self._nid, self.compose_type, self.selected = [], 0, 'code', None
         self.name = 'untitled'
         self.models, self.model = [], None  # available LLMs + the one currently selected in the top bar
         self.clipboard = []  # cell snapshots (plain dicts, not live Cells) for cut/copy/paste
         self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
 
-    def insert_at(self, pos, ctype, source, output=None, visible=True, model=None):
+    def insert_at(self, pos:int, ctype:str, source:str, output:Any=None, visible:bool=True,
+                  model:str|None=None, nb_id:str|None=None, export:bool=False) -> Cell:
+        "Create a new cell of type `ctype` and insert it at list index `pos`."
         self._nid += 1
-        c = Cell(self._nid, ctype, source, output, visible, model)
+        c = Cell(self._nid, ctype, source, output, visible, model, nb_id, export)
         self.cells.insert(pos, c)
         return c
 
-    def add(self, ctype, source, output=None, visible=True, model=None):
-        return self.insert_at(len(self.cells), ctype, source, output, visible, model)
+    def add(self, ctype:str, source:str, output:Any=None, visible:bool=True,
+            model:str|None=None, nb_id:str|None=None, export:bool=False) -> Cell:
+        "Create a new cell of type `ctype` and append it to the end of the notebook."
+        return self.insert_at(len(self.cells), ctype, source, output, visible, model, nb_id, export)
 
-    def index(self, id): return next((i for i,c in enumerate(self.cells) if c.id==id), None)
-    def get(self, id):
+    def index(self, id:int) -> int|None:
+        "The list index of the cell with this `id`, or None if it's not present."
+        return next((i for i,c in enumerate(self.cells) if c.id==id), None)
+
+    def get(self, id:int) -> Cell|None:
+        "The cell with this `id`, or None if it's not present."
         i = self.index(id)
         return self.cells[i] if i is not None else None
-    def sel_index(self):
+
+    def sel_index(self) -> int|None:
+        "The list index of the currently-selected cell, or None if nothing is selected."
         return None if self.selected is None else self.index(self.selected)
 
-    def pair_range(self, id):
+    def pair_range(self, id:int) -> tuple[int,int]|None:
         "Indices (start,end) spanning the Prompt+Assistant pair containing `id`, or just (i,i) for a lone cell."
         i = self.index(id)
         if i is None: return None
@@ -405,14 +434,14 @@ class Notebook:
             return (i-1, i)
         return (i, i)
 
-    def remove(self, id):
+    def remove(self, id:int) -> None:
         "Delete the cell, or its whole Prompt+Assistant pair if it's part of one."
         rng = self.pair_range(id)
         if rng is None: return
         lo, hi = rng
         del self.cells[lo:hi+1]
 
-    def move(self, id, delta):
+    def move(self, id:int, delta:int) -> None:
         "Move the cell (or its Prompt+Assistant pair) up/down as a block, swapping with whatever cell/pair is adjacent."
         rng = self.pair_range(id)
         if rng is None: return
@@ -428,18 +457,19 @@ class Notebook:
             block, neighbor = self.cells[lo:hi+1], self.cells[hi+1:nhi+1]
             self.cells[lo:nhi+1] = neighbor + block
 
-    def _snapshot(self, lo, hi):
-        return [{'ctype':c.ctype,'source':c.source,'output':c.output,'visible':c.visible,'model':c.model}
+    def _snapshot(self, lo:int, hi:int) -> list[dict]:
+        "Plain-dict copies of cells[lo:hi+1], for the clipboard."
+        return [{'ctype':c.ctype,'source':c.source,'output':c.output,'visible':c.visible,'model':c.model,'export':c.export}
                 for c in self.cells[lo:hi+1]]
 
-    def copy_range(self, id):
+    def copy_range(self, id:int) -> None:
         "Copy the cell (or its pair) into the clipboard, without removing it."
         rng = self.pair_range(id)
         if rng is None: return
         lo, hi = rng
         self.clipboard = self._snapshot(lo, hi)
 
-    def cut_range(self, id):
+    def cut_range(self, id:int) -> None:
         "Copy the cell (or its pair) into the clipboard, then remove it."
         rng = self.pair_range(id)
         if rng is None: return
@@ -448,30 +478,34 @@ class Notebook:
         del self.cells[lo:hi+1]
         self.selected = self.cells[min(lo, len(self.cells)-1)].id if self.cells else None
 
-    def paste_after(self, id):
+    def paste_after(self, id:int|None) -> list[Cell]:
         "Paste the clipboard as new cells (fresh ids) right after `id`'s pair, or at the end if id is None."
         if not self.clipboard: return []
         rng = self.pair_range(id) if id is not None else None
         pos = rng[1] + 1 if rng else len(self.cells)
         pasted = []
         for snap in self.clipboard:
-            pasted.append(self.insert_at(pos, snap['ctype'], snap['source'], snap['output'], snap['visible'], snap['model']))
+            pasted.append(self.insert_at(pos, snap['ctype'], snap['source'], snap['output'], snap['visible'],
+                                          snap['model'], export=snap.get('export', False)))
             pos += 1
         self.selected = pasted[0].id
         return pasted
 
-    def reset(self):
+    def reset(self) -> None:
         "Discard all cells and start over, as if boopiter had just launched fresh."
         self.cells.clear()
         self._nid, self.selected, self.name = 0, None, 'untitled'
 
-nb = Notebook()
+
+# %% ../nbs/01_cells.ipynb #4136178e
+nb = Notebook()  # the single running notebook instance
+
+# %% ../nbs/01_cells.ipynb #a26a7ddb
 BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was launched from), like Jupyter
 
-
-# %% ../nbs/01_cells.ipynb #1d3dae0e
-def get_model_list(debug:bool=False): 
-    "Get a list of supported (local) models"
+# %% ../nbs/01_cells.ipynb #9df9b2f0
+def get_model_list(debug:bool=False) -> list[str]:
+    "Query Ollama for the local models it currently has pulled, as lisette-style 'ollama/<name>' strings."
     import httpx
     models = httpx.get("http://localhost:11434/api/tags").json()
     if debug: print("models = ",models)
@@ -479,31 +513,38 @@ def get_model_list(debug:bool=False):
         raise RuntimeError("No local LLM models found -- is Ollama running, and do you have any models pulled?")
     return ['ollama/'+m['model'] for m in models['models']]
 
-# %% ../nbs/01_cells.ipynb #77707f3a
+
+# %% ../nbs/01_cells.ipynb #b7fdcd9f
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
 # triggers a bug in litellm's MCP-handler codepath that returns a raw dict instead of a proper
 # response object (AttributeError: 'dict' object has no attribute 'choices'). Same issue hit by
 # SBrewer15/CellMate (https://github.com/SBrewer15/CellMate) -- this is their patch, adopted as-is:
 # drop tool_schemas for just that one call whenever tool_choice=='none', then restore them after.
 _orig_chat_call = Chat._call
+
+
+# %% ../nbs/01_cells.ipynb #e7617fd4
 @patch
-def _call(self:Chat, msg=None, prefill=None, temp=None, think=None, search=None, stream=False,
-          max_steps=2, step=1, final_prompt=None, tool_choice=None, max_tokens=None, **kwargs):
-    "Internal method that always yields responses"
+def _call(self:Chat, msg:str|None=None, prefill:str|None=None, temp:float|None=None, think:str|None=None,
+          search:str|None=None, stream:bool=False, max_steps:int=2, step:int=1, final_prompt:dict|None=None,
+          tool_choice:str|None=None, max_tokens:int|None=None, **kwargs):
+    "Internal method that always yields responses -- patched (see the comment above) to avoid a litellm/Ollama tool-calling bug."
     _orig_tools = self.tool_schemas
     if tool_choice == 'none': self.tool_schemas, tool_choice = None, None
     try: yield from _orig_chat_call(self, msg, prefill, temp, think, search, stream, max_steps, step, final_prompt, tool_choice, max_tokens, **kwargs)
     finally: self.tool_schemas = _orig_tools
 
-def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools=[]): 
+# %% ../nbs/01_cells.ipynb #834cf2bc
+def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None) -> str:
     "Send a prompt to the LLM and return its response. TODO: can we stream the response rather than wait for as a final big chunk?"
     # _skip_mcp_handler avoids litellm's MCP-proxy import chain (needs fastapi/orjson) that we don't use.
     # Drop it (and re-add fastapi/orjson to pyproject.toml) if/when we actually want MCP tool support.
-    chat = Chat(model, tools=tools, callkw={'_skip_mcp_handler': True}) # FYI: this makes a fresh stateless context each time. is that what we want?
+    chat = Chat(model, tools=tools or [], callkw={'_skip_mcp_handler': True}) # FYI: this makes a fresh stateless context each time. is that what we want?
     response = chat(context)
     return contents(response).content
 
-def add_tool(fn):
+# %% ../nbs/01_cells.ipynb #47866bbf
+def add_tool(fn:callable) -> callable:
     "Register `fn` as a tool the LLM can call on future Prompt-cell runs. Also usable as a decorator: `@add_tool`."
     if not callable(fn):
         raise TypeError(f'add_tool() expects a callable, got {fn!r}')
@@ -511,11 +552,11 @@ def add_tool(fn):
         nb.tools.append(fn)
     return fn
 
+# %% ../nbs/01_cells.ipynb #61480b90
 _shell.push({'nb': nb, 'add_tool': add_tool})  # so code cells can call add_tool(...)/inspect nb directly, no import needed
 
-
-# %% ../nbs/01_cells.ipynb #0ab6c8bb
-def llm_context(nb, cur_id=None):
+# %% ../nbs/01_cells.ipynb #ac17911d
+def llm_context(nb:Notebook, cur_id:int|None=None) -> str:
     "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order."
     cutoff = len(nb.cells)
     if cur_id is not None:
@@ -523,18 +564,22 @@ def llm_context(nb, cur_id=None):
         if i is not None: cutoff = i + 1
     return '\n'.join(f'[{c.ctype}] {c.source}' for c in nb.cells[:cutoff] if c.visible)
 
-# %% ../nbs/01_cells.ipynb #789b130f
-def stub_reply(nb, prompt):
-    "fake/placeholder reply in case llms aren't available (can still test gui)"
+
+# %% ../nbs/01_cells.ipynb #44c07e09
+def stub_reply(nb:Notebook, prompt:str) -> str:
+    "Fake/placeholder LLM reply used when no model is available (lets you still test the GUI)."
     n = sum(c.visible for c in nb.cells)
-        # TODO: use the prompt_llm routine instead to get real llm interaction
+    # TODO: use the prompt_llm routine instead to get real llm interaction
     return (f'(stub) I can see {n} visible cell(s). You said: '
             f'"{prompt.strip()}". Wire a real model into stub_reply() later.')
 
-# %% ../nbs/01_cells.ipynb #99c9e249
+
+# %% ../nbs/01_cells.ipynb #c7bc561b
 _PREFERRED_MODEL_SUBSTR = 'qwen2.5-coder'  # used if present, regardless of exact tag/version
 
-def ensure_models():
+
+# %% ../nbs/01_cells.ipynb #db01327f
+def ensure_models() -> None:
     "Populate nb.models/nb.model once at startup, tolerating an unreachable local LLM server."
     try:
         nb.models = get_model_list()
@@ -543,17 +588,21 @@ def ensure_models():
     preferred = next((m for m in nb.models if _PREFERRED_MODEL_SUBSTR in m), None)
     nb.model = preferred or (nb.models[0] if nb.models else None)
 
+# %% ../nbs/01_cells.ipynb #3014974b
 try:
     @app.on_event('startup')
-    def _load_models():
+    def _load_models() -> None:
+        "Fetch the local model list once, when the real server actually starts up."
         ensure_models()
-except: 
+except:
     print("WARNING: Can't test this cell in notebook, no app")
 
-# %% ../nbs/01_cells.ipynb #5fb3156c
+# %% ../nbs/01_cells.ipynb #39be0753
 BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
-          'prompt':'border-error', 'assistant':'border-error'}
+          'prompt':'border-error', 'assistant':'border-error'}  # left-border color per cell type
 
+
+# %% ../nbs/01_cells.ipynb #e1ecadf2
 # heroicons (outline, 1.5 stroke) -- https://heroicons.com
 ICONS = {
     'copy':          ('M8.25 9V5.25A2.25 2.25 0 0 1 10.5 3h6a2.25 2.25 0 0 1 2.25 2.25v13.5A2.25 2.25 0 0 1 16.5 21h-6a2.25 2.25 0 0 1-2.25-2.25V15m-3 0-3-3m0 0 3-3m-3 3H15',),
@@ -572,46 +621,47 @@ ICONS = {
     'bars-3':        ('M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5',),
     'folder':        ('M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z',),
     'document-text': ('M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',),
-}
+}  # heroicon name -> tuple of SVG path 'd' attributes
 
-def Icon(name, cls='size-4'):
+# %% ../nbs/01_cells.ipynb #df3d9ee3
+def Icon(name:str, cls:str='size-4') -> FT:
     "A heroicons outline SVG, inlined so `stroke='currentColor'` matches the button's text color."
     return fh.Svg(*[SvgPath(stroke_linecap='round', stroke_linejoin='round', d=d) for d in ICONS[name]],
                   xmlns='http://www.w3.org/2000/svg', fill='none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
 
-def IconBtn(name, title, **kw):
+# %% ../nbs/01_cells.ipynb #d37bf5b4
+def IconBtn(name:str, title:str, **kw) -> FT:
+    "A small ghost-style button showing heroicon `name`, with a hover tooltip of `title`."
     return fh.Button(Icon(name), cls='btn btn-sm btn-ghost', title=title, **kw)
 
-# nbdev's '#| export' pragma, as a leading line in a code cell's source. We hide the literal
-# text from the user and represent it with a toggleable bookmark icon instead.
-def _has_export(source):
+# %% ../nbs/01_cells.ipynb #b060d361
+# nbdev's '#| export' pragma is a leading line in a code cell's on-disk source. We keep it OUT
+# of c.source (and the editor) entirely, tracking it instead as Cell.export (a plain bool) --
+# these two helpers are only needed at the load_notebook()/save_notebook() file boundary.
+def _has_export(source:str) -> bool:
+    "True if `source`'s first line is (some spacing variant of) the '#| export' pragma."
     return source.split('\n', 1)[0].strip().replace(' ', '') == '#|export'
 
-def _strip_export(source):
-    'The source with any leading #| export pragma line removed -- what the user sees/edits.'
+# %% ../nbs/01_cells.ipynb #3fa2bdf1
+def _strip_export(source:str) -> str:
+    'The source with any leading #| export pragma line removed.'
     if not _has_export(source): return source
     rest = source.split('\n', 1)
     return rest[1] if len(rest) > 1 else ''
 
-def _set_export(source, flag):
-    "Add or remove the leading '#| export' pragma line so the source matches `flag`."
-    stripped = _strip_export(source)
-    return f'#| export\n{stripped}' if flag else stripped
-
-
-# %% ../nbs/01_cells.ipynb #6e802308
-def cell_toolbar(c):
+# %% ../nbs/01_cells.ipynb #edee20e5
+def cell_toolbar(c:Cell) -> FT:
+    "The row of icon buttons (copy, export toggle, visibility, run, move, delete) shown in a cell's header."
     tgt = '#notebook'
     copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
                          cls='btn btn-sm btn-ghost', data_src=c.source,
                          onclick=f"boopCopy({c.id}, '{c.ctype}')")
     btns = [copy_btn]
     if c.ctype == 'code':
-        exported = _has_export(c.source)
-        btns.append(fh.Button(Icon('bookmark'), title='Exported (#| export)' if exported else 'Not exported',
+        btns.append(fh.Button(Icon('bookmark'), title='Exported (#| export)' if c.export else 'Not exported',
                               type='button', hx_post=toggle_export.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML',
-                              cls='btn btn-sm btn-ghost' + (' text-error' if exported else '')))
+                              cls='btn btn-sm btn-ghost' + (' text-error' if c.export else '')))
     btns.append(IconBtn('eye' if c.visible else 'eye-slash',
                     'Hide from LLM' if c.visible else 'Show to LLM',
                     hx_post=toggle_vis.to(id=c.id), hx_target=tgt))
@@ -627,8 +677,8 @@ def cell_toolbar(c):
     return Div(*btns, cls='flex gap-1 ml-auto')
 
 
-# %% ../nbs/01_cells.ipynb #cc87c16e
-def type_dropdown(c):
+# %% ../nbs/01_cells.ipynb #cd074735
+def type_dropdown(c:Cell) -> FT:
     "Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell."
     if c.ctype == 'assistant':
         return Span('Assistant', cls='font-semibold text-sm')
@@ -641,7 +691,10 @@ def type_dropdown(c):
         Ul(*opts, tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-28 p-1 shadow'),
         cls='dropdown dropdown-bottom')
 
-def cell_header(c):
+
+# %% ../nbs/01_cells.ipynb #5201dbfb
+def cell_header(c:Cell) -> FT:
+    "The top row of a cell: type dropdown, id/timestamp, and the toolbar."
     rest = f': {c.id}' + (f' ({c.ts})' if c.ctype in ('code','assistant') else '')
     if c.ctype == 'assistant' and c.model: rest += f' \xb7 {c.model}'
     return Div(type_dropdown(c),
@@ -649,26 +702,40 @@ def cell_header(c):
                     hx_post=select.to(id=c.id), hx_target='#notebook'),
                cell_toolbar(c), cls='flex items-center gap-2 mb-1')
 
-def cell_body(c):
-    "Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_editor()."
+# %% ../nbs/01_cells.ipynb #79fd4204
+def cell_body(c:Cell) -> FT:
+    "Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_view()/code_editor()."
     if not c.source.strip():  # otherwise an empty cell has nothing visible to click to start editing
         return Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')
     if c.ctype in ('note', 'prompt', 'assistant'):  # markdown + KaTeX + HTML + images + highlighted code fences
         return Div(c.source, cls='marked prose max-w-none')
     return Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
 
-def _cell_outer(c, *content):
+# %% ../nbs/01_cells.ipynb #8fc13eb4
+def _cell_outer(c:Cell, *content) -> FT:
+    "The bordered wrapper div common to every cell, regardless of type or edit state."
     dim    = '' if c.visible else 'opacity-40'
     indent = 'ml-8' if c.ctype == 'assistant' else ''
     ring   = 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 rounded' if c.id == nb.selected else ''
     return Div(*content, id=f'cell-{c.id}',
                cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}')
 
-def code_editor(c):
-    "Code cells are always a live CodeMirror editor; Shift/Ctrl/Cmd+Enter or the play button runs. The '#| export' pragma (if any) is hidden -- see the bookmark toggle in cell_toolbar."
-    src = _strip_export(c.source)
-    ta = Textarea(src, name='source', id=f'ta-{c.id}',
-                  rows=str(max(2, src.count(chr(10)) + 1)),
+# %% ../nbs/01_cells.ipynb #9d004dc0
+def code_view(c:Cell) -> FT:
+    "Static, syntax-highlighted (no live CodeMirror) view of a code cell -- click to load the real editor. Keeping non-focused cells static is what makes theme switches etc. fast on notebooks with many code cells."
+    if not c.source.strip():
+        parts = [Span('(empty -- click to edit)', cls='opacity-40 italic text-sm')]
+    else:
+        parts = [Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto')]
+    if c.output not in (None, ''):
+        parts.append(Pre(str(c.output), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto'))
+    return Div(*parts, cls='cursor-text', hx_get=edit_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')
+
+# %% ../nbs/01_cells.ipynb #ef7dc0f4
+def code_editor(c:Cell) -> FT:
+    "The live CodeMirror editor for a code cell -- only rendered for the cell currently being edited. Shift/Ctrl/Cmd+Enter or the play button runs. c.source never contains the '#| export' pragma -- see Cell.export / the bookmark toggle in cell_toolbar."
+    ta = Textarea(c.source, name='source', id=f'ta-{c.id}',
+                  rows=str(max(2, c.source.count(chr(10)) + 1)),
                   cls='textarea textarea-bordered w-full font-mono',
                   data_cm='code', data_cid=str(c.id))
     parts = [Form(ta, hx_post=save_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')]
@@ -676,17 +743,21 @@ def code_editor(c):
         parts.append(Pre(str(c.output), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto'))
     return Div(*parts)
 
-def render_cell(c):
-    "Code cells are always editors; note/raw/assistant render and open an editor on click."
+# %% ../nbs/01_cells.ipynb #ca88c9db
+def render_cell(c:Cell) -> FT:
+    "Every cell type renders statically and opens its editor on click; only the actively-edited cell gets a live widget (CodeMirror for code, a plain textarea otherwise)."
     if c.ctype == 'code':
-        return _cell_outer(c, cell_header(c), code_editor(c))
+        return _cell_outer(c, cell_header(c), code_editor(c) if c.id == nb.selected else code_view(c))
     body = cell_body(c)
     body = Div(body, cls='cursor-text',
                    hx_get=edit_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')
     return _cell_outer(c, cell_header(c), body)
 
-def render_cell_edit(c):
+# %% ../nbs/01_cells.ipynb #6f817c9b
+def render_cell_edit(c:Cell) -> FT:
     "Inline editor. Code cells use CodeMirror (Python highlight, no wrap); notes/raw use a textarea. Shift/Ctrl/Cmd+Enter saves."
+    if c.ctype == 'code':
+        return _cell_outer(c, cell_header(c), code_editor(c))
     ta = Textarea(c.source, name='source', id=f'ta-{c.id}',
                   rows=str(max(3, c.source.count(chr(10)) + 2)),
                   cls='textarea textarea-bordered w-full font-mono',
@@ -700,11 +771,14 @@ def render_cell_edit(c):
                 hx_target=f'#cell-{c.id}', hx_swap='outerHTML')
     return _cell_outer(c, cell_header(c), form)
 
-def render_nb():
+# %% ../nbs/01_cells.ipynb #a111effb
+def render_nb() -> FT:
+    "Render every cell in the notebook, in order, inside the #notebook container div."
     return Div(*[render_cell(c) for c in nb.cells], id='notebook', cls='flex flex-col')
 
-# %% ../nbs/01_cells.ipynb #958ceb2a
-def composer(draft='', oob=False):
+# %% ../nbs/01_cells.ipynb #7c13faee
+def composer(draft:str='', oob:bool=False) -> FT:
+    "The bottom-of-page input bar: type tabs, a source textarea, and a Boop (submit) button."
     tabs = [fh.A(t.capitalize(),
                  cls=f'tab {"tab-active" if nb.compose_type==t else ""}',
                  hx_post=set_type.to(t=t), hx_target='#composer', hx_swap='outerHTML')
@@ -722,12 +796,15 @@ def composer(draft='', oob=False):
              hx_post=submit_cell, hx_target='#notebook', hx_swap='beforeend'),
         id='composer', cls='border-t border-base-300 pt-3 mt-4', **div_kw)
 
-def render_app(draft=''):
+
+# %% ../nbs/01_cells.ipynb #ca588f52
+def render_app(draft:str='') -> FT:
+    "The whole notebook view: all cells plus the composer, wrapped in one container div."
     return Div(render_nb(), composer(draft), id='app')
 
-# %% ../nbs/01_cells.ipynb #4d2c2d09
+# %% ../nbs/01_cells.ipynb #5adf3d24
 # ---- top menu / control bar ----
-def theme_swap():
+def theme_swap() -> FT:
     "DaisyUI sun/moon swap; drives boopApplyTheme (default dark)."
     return NotStr('<label class="swap swap-rotate btn btn-ghost btn-circle btn-sm" title="Toggle light/dark">'
       '<input type="checkbox" id="theme-toggle" onchange="boopThemeToggle(this)" checked />'
@@ -736,30 +813,38 @@ def theme_swap():
       '<svg class="swap-on h-5 w-5 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
       '<path d="M21.64,13a1,1,0,0,0-1.05-.14,8.05,8.05,0,0,1-3.37.73A8.15,8.15,0,0,1,9.08,5.49a8.59,8.59,0,0,1,.25-2A1,1,0,0,0,8,2.36,10.14,10.14,0,1,0,22,14.05,1,1,0,0,0,21.64,13Zm-9.5,6.69A8.14,8.14,0,0,1,7.08,5.22v.27A10.15,10.15,0,0,0,17.22,15.63a9.79,9.79,0,0,0,2.1-.22A8.11,8.11,0,0,1,12.14,19.73Z"/></svg></label>')
 
-_BOOP2NB = {'code':'code', 'note':'markdown', 'prompt':'markdown', 'raw':'raw', 'assistant':'markdown'}
 
-def save_notebook(path=None):
-    "Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd, by default)."
+# %% ../nbs/01_cells.ipynb #c7096cb2
+_BOOP2NB = {'code':'code', 'note':'markdown', 'prompt':'markdown', 'raw':'raw', 'assistant':'markdown'}  # our ctype -> nbformat cell_type
+
+# %% ../nbs/01_cells.ipynb #e3ceb49a
+def save_notebook(path:str|Path|None=None) -> Path:
+    "Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd, by default). Preserves each cell's original .ipynb id (or captures a freshly-assigned one) so unchanged cells don't produce noisy git diffs. The '#| export' pragma is prepended to code cell source here (and only here) -- nbdev's own parser needs it literally in the file, but boopiter keeps it out of c.source/the editor; see load_notebook() for the inverse."
     path = Path(path) if path else Path.cwd()/f'{nb.name}.ipynb'
     doc = _nbf.v4.new_notebook()
     for c in nb.cells:
         meta = {'boopiter': {'ctype': c.ctype, 'visible': c.visible}}
         kind = _BOOP2NB.get(c.ctype, 'raw')
+        idkw = {'id': c.nb_id} if c.nb_id else {}
+        src = f'#| export\n{c.source}' if (c.ctype == 'code' and c.export) else c.source
         if kind == 'code':
             outputs = [_nbf.v4.new_output('stream', name='stdout', text=str(c.output))] if c.output not in (None, '') else []
-            cell = _nbf.v4.new_code_cell(c.source, outputs=outputs, metadata=meta)
+            cell = _nbf.v4.new_code_cell(src, outputs=outputs, metadata=meta, **idkw)
         elif kind == 'markdown':
-            cell = _nbf.v4.new_markdown_cell(c.source, metadata=meta)
+            cell = _nbf.v4.new_markdown_cell(src, metadata=meta, **idkw)
         else:
-            cell = _nbf.v4.new_raw_cell(c.source, metadata=meta)
+            cell = _nbf.v4.new_raw_cell(src, metadata=meta, **idkw)
+        c.nb_id = cell['id']  # capture the (possibly just-generated) id so future saves reuse it too
         doc.cells.append(cell)
     _nbf.write(doc, str(path))
     return path
 
-_NB_FALLBACK = {'code':'code', 'markdown':'note', 'raw':'raw'}
+# %% ../nbs/01_cells.ipynb #52e1b897
+_NB_FALLBACK = {'code':'code', 'markdown':'note', 'raw':'raw'}  # nbformat cell_type -> our ctype, for plain (non-boopiter) notebooks
 
-def load_notebook(path):
-    "Load a Jupyter notebook file into `nb`, replacing its current contents. Inverse of save_notebook()."
+# %% ../nbs/01_cells.ipynb #db5ac250
+def load_notebook(path:str|Path) -> Notebook:
+    "Load a Jupyter notebook file into `nb`, replacing its current contents. Inverse of save_notebook() -- detects a leading '#| export' line on code cells, sets c.export, and strips it out of the stored/displayed source."
     path = Path(path)
     doc = _nbf.read(str(path), as_version=4)
     nb.cells.clear()
@@ -774,24 +859,32 @@ def load_notebook(path):
         if ctype == 'code':
             texts = [o.get('text','') for o in cell.get('outputs', []) if o.get('output_type') == 'stream']
             output = ''.join(texts) or None
-        nb.add(ctype, cell.source, output=output, visible=meta.get('visible', True))
+        src, exported = cell.source, False
+        if ctype == 'code' and _has_export(src):
+            exported, src = True, _strip_export(src)
+        nb.add(ctype, src, output=output, visible=meta.get('visible', True), nb_id=cell.get('id'), export=exported)
     nb.name = str(path.with_suffix(''))  # keep the directory, only strip .ipynb
     return nb
 
-def fname_display():
+# %% ../nbs/01_cells.ipynb #03860723
+def fname_display() -> FT:
+    "The clickable filename shown in the top bar; click to rename."
     return Span(nb.name, id='fname', title='Click to rename',
                 cls='cursor-pointer font-mono opacity-80 hover:opacity-100',
                 hx_get=rename_form, hx_target='#fname', hx_swap='outerHTML')
 
+# %% ../nbs/01_cells.ipynb #1e7587e0
 @rt
-def rename_form():
+def rename_form() -> FT:
+    "Swap the filename display for a text input, focused and pre-selected, to rename the notebook."
     return Form(Input(value=nb.name, name='name',
                       cls='input input-sm input-bordered font-mono',
                       onkeydown="if(event.key===\'Escape\'){this.form.requestSubmit();}"),
                 Script("var i=document.querySelector(\'#fname input\'); if(i){i.focus();i.select();}"),
                 id='fname', hx_post=rename, hx_target='#fname', hx_swap='outerHTML')
 
-def model_dropdown():
+# %% ../nbs/01_cells.ipynb #6560e13e
+def model_dropdown() -> FT:
     "Select which LLM answers Prompt cells; selection lives on `nb.model`."
     if not nb.models:
         return Span('no models', cls='text-xs opacity-50', title='No local LLMs found (is Ollama running?)')
@@ -799,8 +892,10 @@ def model_dropdown():
     return fh.Select(*opts, name='model', cls='select select-sm select-bordered',
                       hx_post=set_model, hx_trigger='change', hx_swap='none')
 
+# %% ../nbs/01_cells.ipynb #7f7b8257
 @rt
-def set_model(model:str):
+def set_model(model:str) -> str:
+    "Switch the active Prompt-answering model, stopping the previous Ollama model to free its VRAM."
     if model in nb.models and model != nb.model:
         old, nb.model = nb.model, model
         if old and old.startswith('ollama/'):
@@ -809,7 +904,8 @@ def set_model(model:str):
             except Exception: pass
     return ''
 
-def file_menu():
+# %% ../nbs/01_cells.ipynb #9977fc97
+def file_menu() -> FT:
     "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
     items = [
         Li(fh.A('New', href=new_notebook.to(),
@@ -825,7 +921,9 @@ def file_menu():
         Ul(*items, tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
         cls='dropdown dropdown-bottom')
 
-def file_browser_modal():
+# %% ../nbs/01_cells.ipynb #3a2b61f9
+def file_browser_modal() -> FT:
+    "The (initially empty/hidden) dialog that hosts the file-browser listing, opened by file_menu()'s Open item."
     return Dialog(
         Div(
             Div('Open notebook', cls='font-semibold mb-2'),
@@ -834,7 +932,9 @@ def file_browser_modal():
             cls='modal-box'),
         id='file-modal', cls='modal')
 
-def top_bar():
+# %% ../nbs/01_cells.ipynb #8392ed2d
+def top_bar() -> FT:
+    "The whole navbar: file menu + logo + filename on the left, model picker + kernel/theme controls on the right."
     brand = Div(file_menu(), Img(src='/logo.png', cls='h-8 w-8 rounded-full'),
                 Span('boopiter', cls='font-bold text-lg'),
                 Span('/', cls='opacity-40'), fname_display(),
@@ -850,21 +950,28 @@ def top_bar():
         theme_swap(), cls='flex items-center gap-1')
     return Div(brand, ctrls, file_browser_modal(), cls='navbar bg-base-200 shadow px-4 flex justify-between shrink-0')
 
+# %% ../nbs/01_cells.ipynb #c747ff8e
 @rt('/_boopiter_ping')
-def boopiter_ping():
+def boopiter_ping() -> str:
     "Identity check so `boopiter launch` can tell a live boopiter instance apart from something else on the port."
     return 'boopiter'
 
+# %% ../nbs/01_cells.ipynb #c5eef1b1
 @rt('/logo.png')
-def logo_png():
+def logo_png() -> FileResponse:
+    "Serve the boopiter logo, used both as favicon and in the top bar."
     return FileResponse(Path(__file__).parent.parent/'images/logo.png')
 
+# %% ../nbs/01_cells.ipynb #b0deae69
 @rt('/tailwind.css')
-def tailwind_css():
+def tailwind_css() -> FileResponse:
+    "Serve the precompiled Tailwind CSS built by _build_tailwind() at launch."
     return FileResponse(Path(__file__).parent/'static/tailwind.css')
 
+# %% ../nbs/01_cells.ipynb #92f2580b
 @rt
-def index():
+def index() -> tuple:
+    "The full page: title, top bar, the notebook+composer, and the save-toast slot."
     return (Title('boopiter'),
             Div(top_bar(),
                 Div(Div(render_app(), cls='max-w-3xl mx-auto p-4'),
@@ -872,31 +979,35 @@ def index():
                 Div(id='save-toast', cls='toast toast-top toast-end z-50'),
                 cls='h-screen flex flex-col'))
 
-@rt
-def _toast(msg, ok=True):
+# %% ../nbs/01_cells.ipynb #772046af
+def _toast(msg:str, ok:bool=True) -> FT:
     "A little 'Saved' (or error) notice, out-of-band-swapped into #save-toast, that clears itself after ~1.8s."
     return Div(
         Div(msg, cls=f"alert {'alert-success' if ok else 'alert-error'} shadow-lg text-sm py-2 px-4"),
         Script("setTimeout(function(){ var t=document.getElementById('save-toast'); if(t) t.innerHTML=''; }, 1800)"),
         id='save-toast', cls='toast toast-top toast-end z-50', hx_swap_oob='true')
 
+# %% ../nbs/01_cells.ipynb #7bccbce9
 @rt
-def save_now():
+def save_now() -> FT:
+    "Save the notebook to disk and show a toast confirming success (or failure)."
     try:
         p = save_notebook()
         return _toast(f'Saved {p.name}')
     except Exception as e:
         return _toast(f'Save failed: {e}', ok=False)
 
-def _safe_dir(path):
+# %% ../nbs/01_cells.ipynb #4532f1cf
+def _safe_dir(path:str|None) -> Path:
     "Resolve `path` (relative to BROWSE_ROOT) and clamp it back to BROWSE_ROOT if it tries to escape (e.g. via '..')."
     cur = (BROWSE_ROOT/(path or '')).resolve()
     if cur != BROWSE_ROOT and BROWSE_ROOT not in cur.parents: cur = BROWSE_ROOT
     if not cur.is_dir(): cur = BROWSE_ROOT
     return cur
 
+# %% ../nbs/01_cells.ipynb #38dcffa4
 @rt
-def browse(path:str=None):
+def browse(path:str|None=None) -> FT:
     "Jupyter-tree-style directory listing for the file-browser modal, rooted at BROWSE_ROOT."
     cur = _safe_dir(path)
     rel = cur.relative_to(BROWSE_ROOT)
@@ -920,23 +1031,28 @@ def browse(path:str=None):
     return Div(Div('/' if str(rel) == '.' else f'/{rel}', cls='font-mono text-xs opacity-60 mb-2'),
                *rows, id='file-browser-body')
 
+# %% ../nbs/01_cells.ipynb #1df88f38
 @rt
-def open_file(path:str):
-    "Open a notebook found by the file browser; full navigation so the whole page reflects the new notebook."
+def open_file(path:str) -> RedirectResponse:
+    "Open a notebook found by the file browser. Redirects to / afterward so the address bar (and thus a later page reload) doesn't stay pinned to this action -- reloading /open_file?path=... would silently re-run the load and discard any unsaved edits made since."
     target = _safe_dir(Path(path).parent)/Path(path).name
     try: load_notebook(target.relative_to(BROWSE_ROOT))  # relative, to match the CLI's nb.name style
     except Exception: pass
-    return index()
+    return RedirectResponse('/', status_code=303)
 
+# %% ../nbs/01_cells.ipynb #1bf7e7f4
 @rt
-def new_notebook():
+def new_notebook() -> RedirectResponse:
+    "Discard the current notebook and start a blank one. Redirects to / afterward -- same reasoning as open_file()."
     nb.reset()
-    return index()
+    return RedirectResponse('/', status_code=303)
 
+# %% ../nbs/01_cells.ipynb #642a163c
 @rt
-def restart_server():
+def restart_server() -> str:
     "nbdev-export the notebooks as a real (blocking) subprocess -- so we get a genuine exit code instead of guessing a delay -- then clear __pycache__ (WSL/Windows-mounted filesystems can have coarse mtime resolution, which can trick Python into serving stale cached bytecode right after a fast save-then-restart) and exec a fresh copy of this process (same PID, same port). Aborts (leaves the current process running) if export fails. Does NOT save the notebook first; Save manually beforehand if you want to keep unsaved edits."
-    def _do_restart():
+    def _do_restart() -> None:
+        "Runs in a background thread: exports, clears the bytecode cache, and execs a fresh process."
         time.sleep(0.3)  # let the HTTP response reach the browser before we touch anything disruptive
         exe = Path(sys.executable).parent/'nbdev-export'
         exe = str(exe) if exe.exists() else 'nbdev-export'
@@ -954,40 +1070,51 @@ def restart_server():
     threading.Thread(target=_do_restart, daemon=True).start()
     return ''
 
+# %% ../nbs/01_cells.ipynb #ea8522f9
 @rt
-def download():
+def download() -> FileResponse:
+    "Save the notebook, then send it to the browser as a file download."
     p = save_notebook()
     return FileResponse(str(p), filename=p.name)
 
+# %% ../nbs/01_cells.ipynb #34896950
 @rt
-def rename(name:str):
+def rename(name:str) -> FT:
     "Rename and persist the notebook to `{new_name}.ipynb` in the server's cwd."
     nb.name = name.strip() or nb.name
     save_notebook()
     return fname_display()
 
+# %% ../nbs/01_cells.ipynb #e8700aac
 @rt
-def restart_kernel():
+def restart_kernel() -> str:
+    "Reset the shared IPython shell's namespace, clearing all user-defined variables/functions."
     _shell.reset()          # clear kernel namespace
     return ''
 
+# %% ../nbs/01_cells.ipynb #eb1ffa14
 @rt
-def run_all():
+def run_all() -> FT:
     "Run every Code cell, top to bottom, in place (Prompt/Note/Raw/Assistant cells are left untouched)."
     for c in nb.cells:
         if c.ctype == 'code': c.output = run_code(c.source)
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #76a633a6
 @rt
-def interrupt_kernel():
-    return ''               # placeholder: true interrupt needs threaded/async execution
+def interrupt_kernel() -> str:
+    "Placeholder: true interrupt needs threaded/async execution."
+    return ''
 
+# %% ../nbs/01_cells.ipynb #59d0d7be
 @rt
-def set_type(t:str):
+def set_type(t:str) -> FT:
+    "Change the composer's current cell type (what a new cell becomes when you hit Boop)."
     if t in CTYPES: nb.compose_type = t
     return composer()
 
-def run_prompt_cell(id):
+# %% ../nbs/01_cells.ipynb #24f45845
+def run_prompt_cell(id:int) -> Cell|None:
     "(Re)send `id`'s prompt -- plus everything visible above it -- to the LLM; create or refresh the paired Assistant cell. Returns that cell."
     c = nb.get(id)
     if not c or c.ctype != 'prompt': return None
@@ -1005,19 +1132,23 @@ def run_prompt_cell(id):
         nxt = nb.insert_at(i+1, 'assistant', reply, model=nb.model)
     return nxt
 
-def pending_cell(prompt_id):
+# %% ../nbs/01_cells.ipynb #dcb4a2e8
+def pending_cell(prompt_id:int) -> FT:
     "Placeholder shown right after a prompt is submitted; hx-trigger=load immediately fires the real (slow) LLM call and swaps itself out for the real Assistant cell once it replies."
     return Div('Assistant: Tricky...', id=f'pending-{prompt_id}',
                cls='border-l-4 border-error pl-3 py-2 my-2 ml-8 opacity-60 italic',
                hx_post=run_prompt_pending.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
                hx_swap='outerHTML', hx_trigger='load')
 
+# %% ../nbs/01_cells.ipynb #2bfcd687
 @rt
-def run_prompt_pending(id:int):
+def run_prompt_pending(id:int) -> FT|str:
+    "Actually run a Prompt's pending LLM call and return the real Assistant cell, replacing the pending_cell() placeholder."
     c2 = run_prompt_cell(id)
     return render_cell(c2) if c2 else ''
 
-def add_cell(t, source):
+# %% ../nbs/01_cells.ipynb #a93ec690
+def add_cell(t:str, source:str) -> list[Cell]:
     "Create a cell of type `t`: run it if code, just create it if prompt (its Assistant reply is added asynchronously via pending_cell). Returns the new cell(s)."
     if t == 'code':
         return [nb.add('code', source, output=run_code(source))]
@@ -1026,105 +1157,146 @@ def add_cell(t, source):
     else:
         return [nb.add(t, source)]
 
+# %% ../nbs/01_cells.ipynb #4195ebb8
 @rt
-def submit_cell(source:str):
+def submit_cell(source:str) -> tuple:
     "Append only the new cell(s) to #notebook and reset the composer out-of-band, so untouched cells' editors are never re-created. A just-submitted Prompt gets a 'Thinking...' placeholder that fetches its own reply."
     new = add_cell(nb.compose_type, source) if source.strip() else []
     pending = [pending_cell(new[-1].id)] if new and nb.compose_type == 'prompt' else []
     return *[render_cell(c) for c in new], *pending, composer(oob=True)
 
+# %% ../nbs/01_cells.ipynb #d590d406
 @rt
-def split(source:str, pos:int):
+def split(source:str, pos:int) -> tuple:
     "Split the composer at the caret: head becomes a cell, tail stays in the composer."
     head, tail = source[:pos], source[pos:]
     new = add_cell(nb.compose_type, head) if head.strip() else []
     pending = [pending_cell(new[-1].id)] if new and nb.compose_type == 'prompt' else []
     return *[render_cell(c) for c in new], *pending, composer(draft=tail, oob=True)
 
+# %% ../nbs/01_cells.ipynb #0e3e3053
 @rt
-def run_cell(id:int):
+def split_cell(id:int, pos:int) -> FT:
+    "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. Neither half is (re-)executed. Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
+    c = nb.get(id)
+    if not c: return render_nb()
+    head, tail = c.source[:pos], c.source[pos:]
+    c.source = head.rstrip('\n')
+    i = nb.index(c.id)
+    new = nb.insert_at(i+1, c.ctype, tail.lstrip('\n'), export=c.export)
+    nb.selected = new.id
+    return render_nb()
+
+# %% ../nbs/01_cells.ipynb #4fb284a3
+@rt
+def run_cell(id:int) -> FT:
+    "Run this cell (Code: execute; Prompt: re-send to the LLM)."
     c = nb.get(id)
     if c and c.ctype == 'code': c.output = run_code(c.source)
     elif c and c.ctype == 'prompt': run_prompt_cell(id)
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #0310656d
 @rt
-def toggle_vis(id:int):
+def toggle_vis(id:int) -> FT:
+    "Toggle whether this cell is visible to the LLM (shown/hidden in llm_context)."
     c = nb.get(id)
     if c: c.visible = not c.visible
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #a385d3e9
 @rt
-def toggle_export(id:int):
+def toggle_export(id:int) -> FT:
+    "Toggle a code cell's '#| export' flag (the bookmark icon in cell_toolbar)."
     c = nb.get(id)
     if c and c.ctype == 'code':
-        c.source = _set_export(c.source, not _has_export(c.source))
+        c.export = not c.export
     return render_cell(c) if c else render_nb()
 
+# %% ../nbs/01_cells.ipynb #5b0aa468
 @rt
-def del_cell(id:int):
+def del_cell(id:int) -> FT:
+    "Delete this cell (or its Prompt+Assistant pair)."
     nb.remove(id)
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #8adf6704
 @rt
-def move_cell(id:int, delta:int):
+def move_cell(id:int, delta:int) -> FT:
+    "Move this cell (or its Prompt+Assistant pair) up (delta=-1) or down (delta=1)."
     nb.move(id, delta)
     return render_nb()
 
-
-# %% ../nbs/01_cells.ipynb #ecd8ade0
+# %% ../nbs/01_cells.ipynb #bf12bd01
 # --- command-mode (hotkey) routes ---
 @rt
-def select(id:int):
+def select(id:int) -> FT:
+    "Select this cell (highlights it and anchors j/k navigation)."
     nb.selected = id
     return render_nb()
 
+
+# %% ../nbs/01_cells.ipynb #3cecc051
 @rt
-def select_delta(delta:int):
+def select_delta(delta:int) -> FT:
+    "Move the selection up (delta=-1) or down (delta=1) -- the j/k hotkeys."
     if nb.cells:
         i = nb.sel_index()
         i = (0 if delta > 0 else len(nb.cells)-1) if i is None else min(max(i+delta, 0), len(nb.cells)-1)
         nb.selected = nb.cells[i].id
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #74dfa5a1
 @rt
-def insert(where:str):
+def insert(where:str) -> FT:
+    "Insert a new blank cell above or below the current selection -- the a/b hotkeys."
     i = nb.sel_index()
     pos = len(nb.cells) if i is None else (i if where == 'above' else i+1)
     nb.selected = nb.insert_at(pos, nb.compose_type, '').id
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #e8bf81f9
 @rt
-def del_selected():
+def del_selected() -> FT:
+    "Delete the currently-selected cell (or its Prompt+Assistant pair) -- the d-d hotkey."
     if nb.selected is not None:
         i = nb.sel_index()
         nb.remove(nb.selected)
         nb.selected = nb.cells[min(i, len(nb.cells)-1)].id if nb.cells else None
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #8ebcf11f
 @rt
-def cut_selected():
+def cut_selected() -> FT:
+    "Cut the currently-selected cell (or its pair) to the clipboard -- the x hotkey."
     if nb.selected is not None: nb.cut_range(nb.selected)
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #94b262f3
 @rt
-def copy_selected():
+def copy_selected() -> str:
+    "Copy the currently-selected cell (or its pair) to the clipboard -- the c hotkey."
     if nb.selected is not None: nb.copy_range(nb.selected)
     return ''
 
+# %% ../nbs/01_cells.ipynb #b6ad273b
 @rt
-def paste_selected():
+def paste_selected() -> FT:
+    "Paste the clipboard after the currently-selected cell -- the v hotkey."
     nb.paste_after(nb.selected)
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #09757d89
 @rt
-def settype_selected(t:str):
+def settype_selected(t:str) -> FT:
+    "Change the currently-selected cell's type -- the m/y/r hotkeys."
     c = nb.get(nb.selected) if nb.selected is not None else None
     if c and t in CTYPES: c.ctype = t
     return render_nb()
 
+# %% ../nbs/01_cells.ipynb #513a0b0e
 @rt
-def set_ctype(id:int, t:str):
+def set_ctype(id:int, t:str) -> FT:
     "Change one cell's type in place; returns just that cell so the rest of the notebook is untouched."
     c = nb.get(id)
     if c and t in CTYPES and t != c.ctype:
@@ -1132,38 +1304,42 @@ def set_ctype(id:int, t:str):
         c.output = None  # stale output no longer meaningful under the new type
     return render_cell(c) if c else render_nb()
 
+# %% ../nbs/01_cells.ipynb #f05e676c
 # --- inline editing ---
 @rt
-def edit_cell(id:int):
+def edit_cell(id:int) -> FT:
+    "Switch this cell into its live editor (CodeMirror for code, a plain textarea otherwise)."
     c = nb.get(id)
     if not c: return render_nb()
     nb.selected = id
     return render_cell_edit(c)
 
+# %% ../nbs/01_cells.ipynb #aa94e6b4
 @rt
-def view_cell(id:int):
+def view_cell(id:int) -> FT:
+    "Switch this cell back to its static (non-editing) view -- used by the Cancel button."
     c = nb.get(id)
     return render_cell(c) if c else render_nb()
 
+# %% ../nbs/01_cells.ipynb #e046acb8
 @rt
-def save_cell(id:int, source:str):
+def save_cell(id:int, source:str) -> FT:
+    "Commit an edited cell's source (running it if it's code, or re-prompting the LLM if it's a prompt)."
     c = nb.get(id)
     if c:
+        c.source = source
         if c.ctype == 'code':
-            c.source = _set_export(source, _has_export(c.source))  # editor hides the pragma; preserve the existing flag
             c.output = run_code(c.source)
+            if nb.selected == id: nb.selected = None  # revert to the static (fast) view, like every other cell type
         elif c.ctype == 'prompt':
-            c.source = source
             run_prompt_cell(id)
             return render_nb()
-        else:
-            c.source = source
     return render_cell(c) if c else render_nb()
 
+# %% ../nbs/01_cells.ipynb #a0101d70
 @rt
-def sync_cell(id:int, source:str):
+def sync_cell(id:int, source:str) -> str:
     "Update a cell's source WITHOUT executing it -- used by Save to flush any editor content that was never explicitly run (Shift+Enter), matching Jupyter's WYSIWYG save behavior."
     c = nb.get(id)
-    if c:
-        c.source = _set_export(source, _has_export(c.source)) if c.ctype == 'code' else source
+    if c: c.source = source
     return ''
