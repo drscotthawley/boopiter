@@ -725,8 +725,10 @@ def help_modal() -> FT:
         ('Shift + Ctrl / Cmd + -', 'Split the cell at the cursor'),
     ]
     def section(title, pairs):
+        # kbd-sm rendered visibly smaller than the description text next to it -- drop the size
+        # modifier (DaisyUI's default kbd size) and match font-size explicitly to the description.
         return [Div(title, cls='text-xs font-semibold opacity-60 mt-3 mb-1 first:mt-0')] + [
-            Div(Kbd(k, cls='kbd kbd-sm'), Span(v), cls='flex items-center gap-3 py-1') for k, v in pairs]
+            Div(Kbd(k, cls='kbd text-sm'), Span(v, cls='text-sm'), cls='flex items-center gap-3 py-1') for k, v in pairs]
     return Dialog(
         Div(
             Div('Keyboard shortcuts', cls='font-semibold mb-2'),
@@ -736,6 +738,7 @@ def help_modal() -> FT:
             cls='modal-box'),
         Form(fh.Button('close', cls='cursor-default'), method='dialog', cls='modal-backdrop'),
         id='help-modal', cls='modal')
+
 
 # %% ../nbs/01_cells.ipynb #8392ed2d
 def top_bar() -> FT:
