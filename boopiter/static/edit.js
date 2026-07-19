@@ -49,7 +49,7 @@ function boopComposerSplit(cm){
     values:{source: cm.getValue(), pos: cm.indexFromPos(cm.getCursor())}});
 }
 function boopSplitCell(id, pos){
-  htmx.ajax('POST', '/split_cell?id='+id, {target:'#notebook', swap:'outerHTML', values:{pos: pos}});
+  htmx.ajax('POST', '/split_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML', values:{pos: pos}});
 }
 function boopMakeCM(ta, isComposer){
   var dark = window._boopDark !== false;
@@ -68,7 +68,20 @@ function boopMakeCM(ta, isComposer){
     mode:'python', theme: dark?'material-darker':'default',
     lineNumbers:true, lineWrapping:false, viewportMargin:Infinity, indentUnit:4, extraKeys: extra
   });
-  if(isComposer){ window._boopComposerCM = cm; cm.focus(); }
+  if(isComposer){
+    window._boopComposerCM = cm; cm.focus();
+    // Focusing the composer (bottom of the page) auto-scrolls it into view -- fine after the
+    // user's own actions (e.g. Boop-ing a cell re-inits the composer), but on the very first
+    // page load it means you land at the bottom of the notebook instead of the top, like Jupyter.
+    if (window._boopFirstLoad) {
+      window._boopFirstLoad = false;
+      var scroller = document.querySelector('.overflow-y-auto');
+      requestAnimationFrame(function(){ requestAnimationFrame(function(){
+        window.scrollTo(0, 0);
+        if (scroller) scroller.scrollTop = 0;
+      }); });
+    }
+  }
   else {
     window['_boopcm_'+id] = cm; (window._boopcms = window._boopcms || []).push(cm);
     if(String(window._boopFocusAfter) === String(id)){

@@ -1,5 +1,6 @@
 
 window._boopcms = window._boopcms || [];
+window._boopFirstLoad = true;  // guards the composer's initial-focus scroll -- see boopMakeCM in edit.js
 var _HLJS = {
   dark:  'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/atom-one-dark.min.css',
   light: 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/atom-one-light.min.css'

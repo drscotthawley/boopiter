@@ -387,7 +387,6 @@ def _strip_export(source:str) -> str:
 # %% ../nbs/01_cells.ipynb #edee20e5
 def cell_toolbar(c:Cell) -> FT:
     "The row of icon buttons (copy, export toggle, visibility, run, move, delete) shown in a cell's header."
-    tgt = '#notebook'
     copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
                          cls='btn btn-sm btn-ghost', data_src=c.source,
                          onclick=f"boopCopy({c.id}, '{c.ctype}')")
@@ -398,15 +397,26 @@ def cell_toolbar(c:Cell) -> FT:
                               cls='btn btn-sm btn-ghost' + (' text-error' if c.export else '')))
     btns.append(IconBtn('eye' if c.visible else 'eye-slash',
                     'Hide from LLM' if c.visible else 'Show to LLM',
-                    hx_post=toggle_vis.to(id=c.id), hx_target=tgt))
+                    hx_post=toggle_vis.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
     if c.ctype == 'code':
         btns.append(IconBtn('play', 'Run', onclick=f'boopSave({c.id})'))
     elif c.ctype == 'prompt':
-        btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=tgt))
+        # Targeted swap (not the whole #notebook) so re-running a prompt cell mid-notebook doesn't
+        # blow away scroll position: swap the existing Assistant reply if there is one, else insert
+        # a pending placeholder right after this cell.
+        i = nb.index(c.id)
+        nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+        if nxt is not None and nxt.ctype == 'assistant':
+            p_target, p_swap = f'#cell-{nxt.id}', 'outerHTML'
+        else:
+            p_target, p_swap = f'#cell-{c.id}', 'afterend'
+        btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=p_target, hx_swap=p_swap))
+    # Move/delete mutate the DOM out-of-band (see move_cell/del_cell), so these buttons don't
+    # need a real hx-target -- swap='none' means htmx applies the response's OOB directives only.
     btns += [
-        IconBtn('arrow-up', 'Move up',   hx_post=move_cell.to(id=c.id, delta=-1), hx_target=tgt),
-        IconBtn('arrow-down', 'Move down', hx_post=move_cell.to(id=c.id, delta=1),  hx_target=tgt),
-        IconBtn('trash', 'Delete', hx_post=del_cell.to(id=c.id), hx_target=tgt),
+        IconBtn('arrow-up', 'Move up',   hx_post=move_cell.to(id=c.id, delta=-1), hx_swap='none'),
+        IconBtn('arrow-down', 'Move down', hx_post=move_cell.to(id=c.id, delta=1),  hx_swap='none'),
+        IconBtn('trash', 'Delete', hx_post=del_cell.to(id=c.id), hx_swap='none'),
     ]
     return Div(*btns, cls='flex gap-1 ml-auto')
 
@@ -433,8 +443,9 @@ def cell_header(c:Cell) -> FT:
     if c.ctype == 'assistant' and c.model: rest += f' \xb7 {c.model}'
     return Div(type_dropdown(c),
                Span(rest, cls='font-semibold text-sm cursor-pointer flex-1',
-                    hx_post=select.to(id=c.id), hx_target='#notebook'),
+                    hx_post=select.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'),
                cell_toolbar(c), cls='flex items-center gap-2 mb-1')
+
 
 # %% ../nbs/01_cells.ipynb #79fd4204
 def cell_body(c:Cell) -> FT:
@@ -446,13 +457,15 @@ def cell_body(c:Cell) -> FT:
     return Pre(c.source, cls='font-mono text-sm whitespace-pre-wrap')
 
 # %% ../nbs/01_cells.ipynb #8fc13eb4
-def _cell_outer(c:Cell, *content) -> FT:
-    "The bordered wrapper div common to every cell, regardless of type or edit state."
+def _cell_outer(c:Cell, *content, oob=None) -> FT:
+    "The bordered wrapper div common to every cell, regardless of type or edit state. `oob`, if given, marks this div for an htmx out-of-band swap: True for a plain id-matched replace, or an 'hx-swap-oob' spec string (e.g. 'afterend:#cell-5') for a positional insert/replace elsewhere in the DOM."
     dim    = '' if c.visible else 'opacity-40'
     indent = 'ml-8' if c.ctype == 'assistant' else ''
     ring   = 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 rounded' if c.id == nb.selected else ''
+    kw = {'hx_swap_oob': 'true' if oob is True else oob} if oob else {}
     return Div(*content, id=f'cell-{c.id}',
-               cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}')
+               cls=f'border-l-4 {BORDER[c.ctype]} pl-3 py-2 my-2 {dim} {indent} {ring}', **kw)
+
 
 # %% ../nbs/01_cells.ipynb #9d004dc0
 def code_view(c:Cell) -> FT:
@@ -478,14 +491,20 @@ def code_editor(c:Cell) -> FT:
     return Div(*parts)
 
 # %% ../nbs/01_cells.ipynb #ca88c9db
-def render_cell(c:Cell) -> FT:
-    "Every cell type renders statically and opens its editor on click; only the actively-edited cell gets a live widget (CodeMirror for code, a plain textarea otherwise)."
+def render_cell(c:Cell, oob=None) -> FT:
+    "Every cell type renders statically and opens its editor on click; only the actively-edited cell gets a live widget (CodeMirror for code, a plain textarea otherwise). `oob` is forwarded to `_cell_outer` -- see there."
     if c.ctype == 'code':
-        return _cell_outer(c, cell_header(c), code_editor(c) if c.id == nb.selected else code_view(c))
+        return _cell_outer(c, cell_header(c), code_editor(c) if c.id == nb.selected else code_view(c), oob=oob)
     body = cell_body(c)
     body = Div(body, cls='cursor-text',
                    hx_get=edit_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML')
-    return _cell_outer(c, cell_header(c), body)
+    return _cell_outer(c, cell_header(c), body, oob=oob)
+
+
+# %% ../nbs/01_cells.ipynb #eb4d0e25
+def _oob(spec:str, *content) -> FT:
+    "Wrap `content` in a throwaway div carrying a positional htmx out-of-band directive (e.g. 'afterend:#cell-5' or 'beforeend:#notebook'). Needed because htmx's positional OOB swaps (beforebegin/afterend/beforeend) insert only the *children* of the OOB-tagged element, not the element itself -- so anything that needs to land in the DOM with its own id intact (a cell div, a pending placeholder) must be nested one level below the OOB wrapper, not carry the hx-swap-oob attribute itself."
+    return Div(*content, hx_swap_oob=spec)
 
 # %% ../nbs/01_cells.ipynb #6f817c9b
 def render_cell_edit(c:Cell) -> FT:
@@ -664,7 +683,12 @@ def file_browser_modal() -> FT:
             Div(id='file-browser-body'),
             Div(Form(fh.Button('Close', cls='btn btn-sm'), method='dialog'), cls='modal-action'),
             cls='modal-box'),
+        # DaisyUI's click-outside-to-close pattern: a full-screen backdrop form whose submit
+        # (triggered by any click on it, since it has no other interactive content) just closes
+        # the <dialog> via method='dialog', same as the Close button.
+        Form(fh.Button('close', cls='cursor-default'), method='dialog', cls='modal-backdrop'),
         id='file-modal', cls='modal')
+
 
 # %% ../nbs/01_cells.ipynb #8392ed2d
 def top_bar() -> FT:
@@ -746,24 +770,28 @@ def browse(path:str|None=None) -> FT:
     cur = _safe_dir(path)
     rel = cur.relative_to(BROWSE_ROOT)
     entries = sorted(cur.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    # Reuse DaisyUI's own `menu` component (same as file_menu()'s hamburger dropdown, which also
+    # skips the `-sm` size modifier) so the highlight color and font size both match exactly.
+    row_cls = 'flex items-center gap-2 py-1 px-2'
     rows = []
     if cur != BROWSE_ROOT:
         up = '' if rel.parent == Path('.') else str(rel.parent)
-        rows.append(fh.A(Icon('folder'), ' ..', hx_get=browse.to(path=up),
-                          hx_target='#file-browser-body', cls='flex items-center gap-2 py-1'))
+        rows.append(Li(fh.A(Icon('folder'), ' ..', hx_get=browse.to(path=up),
+                             hx_target='#file-browser-body', cls=row_cls)))
     for p in entries:
         if p.name.startswith('.'): continue
         relp = str(p.relative_to(BROWSE_ROOT))
         if p.is_dir():
-            rows.append(fh.A(Icon('folder'), ' ' + p.name, hx_get=browse.to(path=relp),
-                              hx_target='#file-browser-body', cls='flex items-center gap-2 py-1'))
+            rows.append(Li(fh.A(Icon('folder'), ' ' + p.name, hx_get=browse.to(path=relp),
+                                 hx_target='#file-browser-body', cls=row_cls)))
         elif p.suffix == '.ipynb':
-            rows.append(fh.A(Icon('document-text'), ' ' + p.name, href=open_file.to(path=relp),
-                              cls='flex items-center gap-2 py-1'))
+            rows.append(Li(fh.A(Icon('document-text'), ' ' + p.name, href=open_file.to(path=relp), cls=row_cls)))
         else:
-            rows.append(Div(Icon('document-text'), Span(p.name), cls='flex items-center gap-2 py-1 opacity-40'))
+            rows.append(Li(Div(Icon('document-text'), Span(p.name), cls=row_cls + ' opacity-40'),
+                            cls='pointer-events-none'))
     return Div(Div('/' if str(rel) == '.' else f'/{rel}', cls='font-mono text-xs opacity-60 mb-2'),
-               *rows, id='file-browser-body')
+               Ul(*rows, cls='menu p-0'), id='file-browser-body')
+
 
 # %% ../nbs/01_cells.ipynb #1df88f38
 @rt
@@ -867,12 +895,14 @@ def run_prompt_cell(id:int) -> Cell|None:
     return nxt
 
 # %% ../nbs/01_cells.ipynb #dcb4a2e8
-def pending_cell(prompt_id:int) -> FT:
-    "Placeholder shown right after a prompt is submitted; hx-trigger=load immediately fires the real (slow) LLM call and swaps itself out for the real Assistant cell once it replies."
+def pending_cell(prompt_id:int, oob_swap:str=None) -> FT:
+    "Placeholder shown right after a prompt is submitted; hx-trigger=load immediately fires the real (slow) LLM call and swaps itself out for the real Assistant cell once it replies. If `oob_swap` is given (an htmx hx-swap-oob spec like 'outerHTML:#cell-5' or 'afterend:#cell-5'), this placeholder is delivered out-of-band at that location instead of being the response's main swap target."
+    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
     return Div('Assistant: Tricky...', id=f'pending-{prompt_id}',
                cls='border-l-4 border-error pl-3 py-2 my-2 ml-8 opacity-60 italic',
                hx_post=run_prompt_pending.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
-               hx_swap='outerHTML', hx_trigger='load')
+               hx_swap='outerHTML', hx_trigger='load', **kw)
+
 
 # %% ../nbs/01_cells.ipynb #2bfcd687
 @rt
@@ -910,33 +940,40 @@ def split(source:str, pos:int) -> tuple:
 
 # %% ../nbs/01_cells.ipynb #0e3e3053
 @rt
-def split_cell(id:int, pos:int) -> FT:
+def split_cell(id:int, pos:int) -> FT|tuple:
     "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. Neither half is (re-)executed. Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
     c = nb.get(id)
-    if not c: return render_nb()
+    if not c: return ''
     head, tail = c.source[:pos], c.source[pos:]
     c.source = head.rstrip('\n')
     i = nb.index(c.id)
     new = nb.insert_at(i+1, c.ctype, tail.lstrip('\n'), export=c.export)
     nb.selected = new.id
-    return render_nb()
+    return render_cell(c), _oob(f'afterend:#cell-{c.id}', render_cell(new))
+
 
 # %% ../nbs/01_cells.ipynb #4fb284a3
 @rt
 def run_cell(id:int) -> FT:
-    "Run this cell (Code: execute; Prompt: re-send to the LLM)."
+    "Run this cell (Code: execute immediately and re-render; Prompt: return a pending placeholder that fetches its own reply, so the caller can target just this cell instead of the whole notebook)."
     c = nb.get(id)
-    if c and c.ctype == 'code': c.output = run_code(c.source)
-    elif c and c.ctype == 'prompt': run_prompt_cell(id)
+    if c and c.ctype == 'code':
+        c.output = run_code(c.source)
+        return render_nb()
+    elif c and c.ctype == 'prompt':
+        return pending_cell(id)
     return render_nb()
+
 
 # %% ../nbs/01_cells.ipynb #0310656d
 @rt
-def toggle_vis(id:int) -> FT:
+def toggle_vis(id:int) -> FT|str:
     "Toggle whether this cell is visible to the LLM (shown/hidden in llm_context)."
     c = nb.get(id)
-    if c: c.visible = not c.visible
-    return render_nb()
+    if not c: return ''
+    c.visible = not c.visible
+    return render_cell(c)
+
 
 # %% ../nbs/01_cells.ipynb #a385d3e9
 @rt
@@ -949,62 +986,116 @@ def toggle_export(id:int) -> FT:
 
 # %% ../nbs/01_cells.ipynb #5b0aa468
 @rt
-def del_cell(id:int) -> FT:
-    "Delete this cell (or its Prompt+Assistant pair)."
+def del_cell(id:int) -> tuple:
+    "Delete this cell (or its Prompt+Assistant pair). Removes just the affected DOM node(s) out-of-band instead of re-rendering the whole notebook."
+    rng = nb.pair_range(id)
+    if rng is None: return ('',)
+    ids = [nb.cells[j].id for j in range(rng[0], rng[1]+1)]
     nb.remove(id)
-    return render_nb()
+    return tuple(Div(id=f'cell-{rid}', hx_swap_oob='delete') for rid in ids)
+
 
 # %% ../nbs/01_cells.ipynb #8adf6704
 @rt
-def move_cell(id:int, delta:int) -> FT:
-    "Move this cell (or its Prompt+Assistant pair) up (delta=-1) or down (delta=1)."
+def move_cell(id:int, delta:int) -> tuple:
+    "Move this cell (or its Prompt+Assistant pair) up (delta=-1) or down (delta=1). Rather than re-rendering the whole notebook, this deletes the moved block's DOM node(s) out-of-band and reinserts them next to whichever cell/pair they swapped with -- the rest of the notebook's DOM (and the page's scroll position) is never touched."
+    rng = nb.pair_range(id)
+    if rng is None: return ('',)
+    lo, hi = rng
+    if delta < 0:
+        if lo == 0: return ('',)
+        nlo, _ = nb.pair_range(nb.cells[lo-1].id)
+        anchor_id, swap = nb.cells[nlo].id, 'beforebegin'
+    elif delta > 0:
+        if hi >= len(nb.cells) - 1: return ('',)
+        _, nhi = nb.pair_range(nb.cells[hi+1].id)
+        anchor_id, swap = nb.cells[nhi].id, 'afterend'
+    else:
+        return ('',)
+    block_ids = [nb.cells[j].id for j in range(lo, hi+1)]
     nb.move(id, delta)
-    return render_nb()
+    deletes = [Div(id=f'cell-{bid}', hx_swap_oob='delete') for bid in block_ids]
+    order = reversed(block_ids) if swap == 'afterend' else block_ids  # afterend inserts stack in reverse of iteration order
+    inserts = [_oob(f'{swap}:#cell-{anchor_id}', render_cell(nb.get(bid))) for bid in order]
+    return (*deletes, *inserts)
+
 
 # %% ../nbs/01_cells.ipynb #bf12bd01
 # --- command-mode (hotkey) routes ---
 @rt
-def select(id:int) -> FT:
-    "Select this cell (highlights it and anchors j/k navigation)."
+def select(id:int) -> FT|tuple|str:
+    "Select this cell (highlights it and anchors j/k navigation). Updates just the newly- and previously-selected cells, not the whole notebook."
+    old, c = nb.selected, nb.get(id)
+    if c is None: return ''
     nb.selected = id
-    return render_nb()
+    old_c = nb.get(old) if (old is not None and old != id) else None
+    return (render_cell(c), render_cell(old_c, oob=True)) if old_c is not None else render_cell(c)
 
 
 # %% ../nbs/01_cells.ipynb #3cecc051
 @rt
-def select_delta(delta:int) -> FT:
-    "Move the selection up (delta=-1) or down (delta=1) -- the j/k hotkeys."
+def select_delta(delta:int) -> tuple:
+    "Move the selection up (delta=-1) or down (delta=1) -- the j/k hotkeys. Triggered by a global hotkey (not a specific cell's button), so the response carries out-of-band updates for whichever cells actually changed rather than a full re-render."
+    old = nb.selected
     if nb.cells:
         i = nb.sel_index()
         i = (0 if delta > 0 else len(nb.cells)-1) if i is None else min(max(i+delta, 0), len(nb.cells)-1)
         nb.selected = nb.cells[i].id
-    return render_nb()
+    changed = {old, nb.selected} - {None}
+    parts = [render_cell(c, oob=True) for cid in changed if (c := nb.get(cid)) is not None]
+    return tuple(parts) if parts else ('',)
+
 
 # %% ../nbs/01_cells.ipynb #74dfa5a1
 @rt
-def insert(where:str) -> FT:
-    "Insert a new blank cell above or below the current selection -- the a/b hotkeys."
+def insert(where:str) -> tuple:
+    "Insert a new blank cell above or below the current selection -- the a/b hotkeys. Inserts the new cell out-of-band next to its anchor, and refreshes the previously-selected cell (to drop its highlight ring) rather than re-rendering the whole notebook."
+    old_sel = nb.selected
     i = nb.sel_index()
-    pos = len(nb.cells) if i is None else (i if where == 'above' else i+1)
-    nb.selected = nb.insert_at(pos, nb.compose_type, '').id
-    return render_nb()
+    if i is None:
+        new = nb.insert_at(len(nb.cells), nb.compose_type, '')
+        nb.selected = new.id
+        return (_oob('beforeend:#notebook', render_cell(new)),)
+    anchor_id = nb.cells[i].id
+    pos = i if where == 'above' else i+1
+    new = nb.insert_at(pos, nb.compose_type, '')
+    nb.selected = new.id
+    swap = 'beforebegin' if where == 'above' else 'afterend'
+    parts = [_oob(f'{swap}:#cell-{anchor_id}', render_cell(new))]
+    old_c = nb.get(old_sel) if old_sel != nb.selected else None
+    if old_c is not None: parts.append(render_cell(old_c, oob=True))
+    return tuple(parts)
+
 
 # %% ../nbs/01_cells.ipynb #e8bf81f9
 @rt
-def del_selected() -> FT:
+def del_selected() -> tuple:
     "Delete the currently-selected cell (or its Prompt+Assistant pair) -- the d-d hotkey."
-    if nb.selected is not None:
-        i = nb.sel_index()
-        nb.remove(nb.selected)
-        nb.selected = nb.cells[min(i, len(nb.cells)-1)].id if nb.cells else None
-    return render_nb()
+    if nb.selected is None: return ('',)
+    i = nb.sel_index()
+    rng = nb.pair_range(nb.selected)
+    ids = [nb.cells[j].id for j in range(rng[0], rng[1]+1)] if rng else [nb.selected]
+    nb.remove(nb.selected)
+    nb.selected = nb.cells[min(i, len(nb.cells)-1)].id if nb.cells else None
+    parts = [Div(id=f'cell-{rid}', hx_swap_oob='delete') for rid in ids]
+    new_c = nb.get(nb.selected) if nb.selected is not None else None
+    if new_c is not None: parts.append(render_cell(new_c, oob=True))
+    return tuple(parts)
+
 
 # %% ../nbs/01_cells.ipynb #8ebcf11f
 @rt
-def cut_selected() -> FT:
+def cut_selected() -> tuple:
     "Cut the currently-selected cell (or its pair) to the clipboard -- the x hotkey."
-    if nb.selected is not None: nb.cut_range(nb.selected)
-    return render_nb()
+    if nb.selected is None: return ('',)
+    rng = nb.pair_range(nb.selected)
+    ids = [nb.cells[j].id for j in range(rng[0], rng[1]+1)] if rng else [nb.selected]
+    nb.cut_range(nb.selected)  # also updates nb.selected
+    parts = [Div(id=f'cell-{rid}', hx_swap_oob='delete') for rid in ids]
+    new_c = nb.get(nb.selected) if nb.selected is not None else None
+    if new_c is not None: parts.append(render_cell(new_c, oob=True))
+    return tuple(parts)
+
 
 # %% ../nbs/01_cells.ipynb #94b262f3
 @rt
@@ -1015,18 +1106,35 @@ def copy_selected() -> str:
 
 # %% ../nbs/01_cells.ipynb #b6ad273b
 @rt
-def paste_selected() -> FT:
-    "Paste the clipboard after the currently-selected cell -- the v hotkey."
-    nb.paste_after(nb.selected)
-    return render_nb()
+def paste_selected() -> tuple:
+    "Paste the clipboard after the currently-selected cell -- the v hotkey. Inserts the pasted cell(s) out-of-band, right after their anchor (or at the end, if nothing was selected), instead of re-rendering the whole notebook."
+    old_sel = nb.selected
+    i = nb.sel_index()
+    anchor_id = nb.cells[i].id if i is not None else None
+    pasted = nb.paste_after(nb.selected)  # also updates nb.selected
+    if not pasted: return ('',)
+    parts = []
+    if anchor_id is None:
+        for c in pasted: parts.append(_oob('beforeend:#notebook', render_cell(c)))
+    else:
+        prev = anchor_id
+        for c in pasted:
+            parts.append(_oob(f'afterend:#cell-{prev}', render_cell(c)))
+            prev = c.id
+    old_c = nb.get(old_sel) if old_sel != nb.selected else None
+    if old_c is not None: parts.append(render_cell(old_c, oob=True))
+    return tuple(parts)
+
 
 # %% ../nbs/01_cells.ipynb #09757d89
 @rt
-def settype_selected(t:str) -> FT:
+def settype_selected(t:str) -> FT|str:
     "Change the currently-selected cell's type -- the m/y/r hotkeys."
     c = nb.get(nb.selected) if nb.selected is not None else None
-    if c and t in CTYPES: c.ctype = t
-    return render_nb()
+    if not (c and t in CTYPES): return ''
+    c.ctype = t
+    return render_cell(c, oob=True)
+
 
 # %% ../nbs/01_cells.ipynb #513a0b0e
 @rt
@@ -1057,18 +1165,29 @@ def view_cell(id:int) -> FT:
 
 # %% ../nbs/01_cells.ipynb #e046acb8
 @rt
-def save_cell(id:int, source:str) -> FT:
-    "Commit an edited cell's source (running it if it's code, or re-prompting the LLM if it's a prompt)."
+def save_cell(id:int, source:str) -> FT|tuple:
+    "Commit an edited cell's source (running it if it's code, or re-prompting the LLM if it's a prompt). Targets just this cell (and, for prompts, the paired Assistant cell) rather than the whole notebook, so editing a cell deep in a long notebook doesn't blow away scroll position."
     c = nb.get(id)
-    if c:
-        c.source = source
-        if c.ctype == 'code':
-            c.output = run_code(c.source)
-            if nb.selected == id: nb.selected = None  # revert to the static (fast) view, like every other cell type
-        elif c.ctype == 'prompt':
-            run_prompt_cell(id)
-            return render_nb()
-    return render_cell(c) if c else render_nb()
+    if not c: return render_nb()
+    c.source = source
+    if c.ctype == 'code':
+        c.output = run_code(c.source)
+        if nb.selected == id: nb.selected = None  # revert to the static (fast) view, like every other cell type
+        return render_cell(c)
+    elif c.ctype == 'prompt':
+        i = nb.index(c.id)
+        nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+        if nxt is not None and nxt.ctype == 'assistant':
+            # 'true'/'outerHTML' OOB swaps keep the tagged element itself, so pending_cell can carry the directive directly.
+            pend = pending_cell(id, oob_swap=f'outerHTML:#cell-{nxt.id}')
+        else:
+            # Positional OOB swaps (afterend/beforebegin/beforeend) insert only the tagged element's
+            # *children* -- so pending_cell must be wrapped, not itself carry the hx-swap-oob attribute,
+            # or its own id/hx-trigger="load" would be discarded on insertion. See _oob().
+            pend = _oob(f'afterend:#cell-{c.id}', pending_cell(id))
+        return render_cell(c), pend
+    return render_cell(c)
+
 
 # %% ../nbs/01_cells.ipynb #a0101d70
 @rt

@@ -1,7 +1,10 @@
 
 (function(){
   let lastD = 0;
-  const act = (url) => htmx.ajax('POST', url, {target:'#notebook', swap:'outerHTML'});
+  // Command-mode routes now return out-of-band updates for just the cell(s) that changed
+  // (see move_cell/del_cell/etc. in cells.py) rather than the whole notebook -- swap:'none'
+  // means htmx applies only those OOB directives; target is irrelevant but still required.
+  const act = (url) => htmx.ajax('POST', url, {target:'#notebook', swap:'none'});
 
   // Toggle '# ' comments on the selected lines of a textarea (Cmd/Ctrl+/).
   const toggleComment = (ta) => {
