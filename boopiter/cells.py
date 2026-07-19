@@ -78,12 +78,19 @@ daisy_hdrs = [
     Script(src='https://cdn.jsdelivr.net/npm/codemirror@5/addon/comment/comment.min.js'),
     Link(rel='icon', type='image/png', href='/logo.png'),
     Style(_MARKED_CSS),
+    # DaisyUI's default tooltip font-size (.875rem) renders like a native OS tooltip -- bump it so
+    # hover hints are actually legible instead of squinting-required. .tooltip-right-align keeps a
+    # bottom-tooltip but anchors its right edge (instead of centering) to the target, for elements
+    # flush against the viewport's right edge where a centered tooltip would get clipped.
+    Style('.tooltip[data-tip]:before{font-size:.88rem}'
+          '.tooltip-right-align[data-tip]:before{left:auto;right:0;transform:translateY(var(--tt-pos,-.25rem))}'),
     Script("import { AnsiUp } from 'https://cdn.jsdelivr.net/npm/ansi_up@6/ansi_up.js';"
            " window.AnsiUp = AnsiUp; if(window.boopRenderAnsi) boopRenderAnsi();", type='module'),
     Script(_THEME_JS),
     Script(_HOTKEYS_JS),
     Script(_EDIT_JS),
 ]
+
 
 # %% ../nbs/01_cells.ipynb #74163e30
 app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'})
@@ -380,7 +387,8 @@ def Icon(name:str, cls:str='size-4') -> FT:
 # %% ../nbs/01_cells.ipynb #d37bf5b4
 def IconBtn(name:str, title:str, **kw) -> FT:
     "A small ghost-style button showing heroicon `name`, with a hover tooltip of `title`."
-    return fh.Button(Icon(name), cls='btn btn-sm btn-ghost', title=title, **kw)
+    return fh.Button(Icon(name), cls='btn btn-sm btn-ghost tooltip tooltip-bottom', data_tip=title, **kw)
+
 
 # %% ../nbs/01_cells.ipynb #b060d361
 # nbdev's '#| export' pragma is a leading line in a code cell's on-disk source. We keep it OUT
@@ -400,14 +408,14 @@ def _strip_export(source:str) -> str:
 # %% ../nbs/01_cells.ipynb #edee20e5
 def cell_toolbar(c:Cell) -> FT:
     "The row of icon buttons (copy, export toggle, visibility, run, move, delete) shown in a cell's header."
-    copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', title='Copy to clipboard', type='button',
-                         cls='btn btn-sm btn-ghost', data_src=c.source,
+    copy_btn = fh.Button(Icon('copy'), id=f'copy-{c.id}', data_tip='Copy to clipboard', type='button',
+                         cls='btn btn-sm btn-ghost tooltip tooltip-bottom', data_src=c.source,
                          onclick=f"boopCopy({c.id}, '{c.ctype}')")
     btns = [copy_btn]
     if c.ctype == 'code':
-        btns.append(fh.Button(Icon('bookmark'), title='Exported (#| export)' if c.export else 'Not exported',
+        btns.append(fh.Button(Icon('bookmark'), data_tip='Exported (#| export)' if c.export else 'Not exported',
                               type='button', hx_post=toggle_export.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML',
-                              cls='btn btn-sm btn-ghost' + (' text-error' if c.export else '')))
+                              cls='btn btn-sm btn-ghost tooltip tooltip-bottom' + (' text-error' if c.export else '')))
     btns.append(IconBtn('eye' if c.visible else 'eye-slash',
                     'Hide from LLM' if c.visible else 'Show to LLM',
                     hx_post=toggle_vis.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
@@ -432,6 +440,7 @@ def cell_toolbar(c:Cell) -> FT:
         IconBtn('trash', 'Delete', hx_post=del_cell.to(id=c.id), hx_swap='none'),
     ]
     return Div(*btns, cls='flex gap-1 ml-auto')
+
 
 
 # %% ../nbs/01_cells.ipynb #cd074735
@@ -572,7 +581,9 @@ def render_app(draft:str='') -> FT:
 # ---- top menu / control bar ----
 def theme_swap() -> FT:
     "DaisyUI sun/moon swap; drives boopApplyTheme (default dark)."
-    return NotStr('<label class="swap swap-rotate btn btn-ghost btn-circle btn-sm" title="Toggle light/dark">'
+    # tooltip-right-align: this is the rightmost element in the navbar, flush against the viewport
+    # edge, so a centered tooltip-bottom would overflow off-screen -- anchor its right edge instead.
+    return NotStr('<label class="swap swap-rotate btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom tooltip-right-align" data-tip="Toggle light/dark">'
       '<input type="checkbox" id="theme-toggle" onchange="boopThemeToggle(this)" checked />'
       '<svg class="swap-off h-5 w-5 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
       '<path d="M5.64,17l-.71.71a1,1,0,0,0,0,1.41,1,1,0,0,0,1.41,0l.71-.71A1,1,0,0,0,5.64,17ZM5,12a1,1,0,0,0-1-1H3a1,1,0,0,0,0,2H4A1,1,0,0,0,5,12Zm7-7a1,1,0,0,0,1-1V3a1,1,0,0,0-2,0V4A1,1,0,0,0,12,5ZM5.64,7.05a1,1,0,0,0,.7.29,1,1,0,0,0,.71-.29,1,1,0,0,0,0-1.41l-.71-.71A1,1,0,0,0,4.93,6.34Zm12,.29a1,1,0,0,0,.7-.29l.71-.71a1,1,0,1,0-1.41-1.41L17,5.64a1,1,0,0,0,0,1.41A1,1,0,0,0,17.66,7.34ZM21,11H20a1,1,0,0,0,0,2h1a1,1,0,0,0,0-2Zm-9,8a1,1,0,0,0-1,1v1a1,1,0,0,0,2,0V20A1,1,0,0,0,12,19ZM18.36,17A1,1,0,0,0,17,18.36l.71.71a1,1,0,0,0,1.41,0,1,1,0,0,0,0-1.41ZM12,6.5A5.5,5.5,0,1,0,17.5,12,5.51,5.51,0,0,0,12,6.5Zm0,9A3.5,3.5,0,1,1,15.5,12,3.5,3.5,0,0,1,12,15.5Z"/></svg>'
@@ -635,9 +646,10 @@ def load_notebook(path:str|Path) -> Notebook:
 # %% ../nbs/01_cells.ipynb #03860723
 def fname_display() -> FT:
     "The clickable filename shown in the top bar; click to rename."
-    return Span(nb.name, id='fname', title='Click to rename',
-                cls='cursor-pointer font-mono opacity-80 hover:opacity-100',
+    return Span(nb.name, id='fname', data_tip='Click to rename',
+                cls='cursor-pointer font-mono opacity-80 hover:opacity-100 tooltip tooltip-bottom',
                 hx_get=rename_form, hx_target='#fname', hx_swap='outerHTML')
+
 
 # %% ../nbs/01_cells.ipynb #1e7587e0
 @rt
@@ -653,10 +665,11 @@ def rename_form() -> FT:
 def model_dropdown() -> FT:
     "Select which LLM answers Prompt cells; selection lives on `nb.model`."
     if not nb.models:
-        return Span('no models', cls='text-xs opacity-50', title='No local LLMs found (is Ollama running?)')
+        return Span('no models', cls='text-xs opacity-50 tooltip tooltip-bottom', data_tip='No local LLMs found (is Ollama running?)')
     opts = [fh.Option(m, value=m, selected=(m == nb.model)) for m in nb.models]
     return fh.Select(*opts, name='model', cls='select select-sm select-bordered',
                       hx_post=set_model, hx_trigger='change', hx_swap='none')
+
 
 # %% ../nbs/01_cells.ipynb #7f7b8257
 @rt
@@ -753,13 +766,13 @@ def top_bar() -> FT:
     icon_cls = 'size-[19px]'
     ctrls = Div(
         model_dropdown(),
-        fh.Button(Icon('question-mark-circle', cls=icon_cls), title='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('question-mark-circle', cls=icon_cls), data_tip='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   onclick="document.getElementById('help-modal').showModal()"),
-        fh.Button(Icon('x-circle', cls=icon_cls), title='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('x-circle', cls=icon_cls), data_tip='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=interrupt_kernel, hx_swap='none'),
-        fh.Button(Icon('arrow-path', cls=icon_cls), title='Restart kernel', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('arrow-path', cls=icon_cls), data_tip='Restart kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=restart_kernel, hx_swap='none'),
-        fh.Button(Icon('play-circle', cls=icon_cls), title='Run all code cells', cls='btn btn-ghost btn-circle btn-sm',
+        fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
         theme_swap(), cls='flex items-center gap-1')
     return Div(brand, ctrls, file_browser_modal(), help_modal(),
