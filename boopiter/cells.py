@@ -11,12 +11,12 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
            'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'context_menu',
-           'file_browser_modal', 'help_modal', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
-           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell',
-           'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert',
-           'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected',
-           'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'file_browser_modal', 'help_modal', 'tools_menu', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css',
+           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename',
+           'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell',
+           'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select',
+           'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
+           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
@@ -283,7 +283,7 @@ class Notebook:
         self.models, self.model = [], None  # available LLMs + the one currently selected in the top bar
         self.clipboard = []  # cell snapshots (plain dicts, not live Cells) for cut/copy/paste
         self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
-        self.use_slmn_tools = True  # include slmn's tools (get_tool_list()) alongside nb.tools -- toggled by a future GUI control
+        self.tool_selection = dict(DEFAULT_TOOL_SELECTION)  # which tool sources are active -- toggled by the wrench-icon Tools menu; see get_tool_list()
 
     def insert_at(self, pos:int, ctype:str, source:str, output:Any=None, visible:bool=True,
                   model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None) -> Cell:
@@ -396,16 +396,15 @@ BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was
 _prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming a reply, if any -- parallel to _run_state (code), not shared with it: a code cell and a prompt reply use different resources and can run at the same time.
 
 def _run_prompt_bg(context:str, model:str, tools:list, state:_RunState) -> None:
-    "Runs in a background thread: streams the LLM reply token-by-token into state.buffer, then sets state.blocks = (content, details_html) once the final full response arrives. See prompt_llm() for the non-streaming equivalent (still used by run_all-style batch paths, if any)."
+    "Runs in a background thread: drives llms.stream_llm_reply() (which owns the actual model-calling strategy, including how tools are exposed -- see there) into state.buffer/state.blocks. This function's only job is the background-thread/UI-state plumbing shared with code-cell streaming; it has no LLM-specific logic of its own."
     try:
-        chat = Chat(model, tools=tools or [], callkw={'_skip_mcp_handler': True})
-        for chunk in chat(context, stream=True):
-            if hasattr(chunk.choices[0], 'message'):  # the final item -- a full ModelResponse, not a delta
-                msg = contents(chunk)
-                state.blocks = (msg.content, _reply_details_html(chunk, msg))
+        for item in stream_llm_reply(context, model, tools):
+            if item[0] == 'final':
+                _, content, details = item
+                state.blocks = (content, details)
             else:
-                delta = chunk.choices[0].delta.content
-                if delta: state.buffer.append(delta)
+                _, delta = item
+                state.buffer.append(delta)
     except KeyboardInterrupt:
         state.blocks = (''.join(state.buffer) + '\n\n*(interrupted)*', None)
     except Exception as e:
@@ -418,7 +417,8 @@ def _start_prompt_run(prompt_id:int) -> None:
     c = nb.get(prompt_id)
     state = _RunState(prompt_id)
     if nb.model:
-        tools = get_tool_list(include_slmn=nb.use_slmn_tools) + nb.tools
+        tools = get_tool_list(nb.tool_selection) + nb.tools
+        _push_tools()  # keep the shell namespace in sync before the model can suggest calling any of these
         state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), nb.model, tools, state), daemon=True)
         _prompt_state = state
         state.thread.start()
@@ -476,6 +476,13 @@ def add_tool(fn:callable) -> callable:
 
 # %% ../nbs/01_cells.ipynb #61480b90
 _shell.push({'nb': nb, 'add_tool': add_tool})  # so code cells can call add_tool(...)/inspect nb directly, no import needed
+
+def _push_tools() -> None:
+    "Push every currently-selected tool function into the shared shell's namespace, keyed by name, so code the model suggests calling one of them (per tools_system_prompt(), see llms.py) is actually runnable as-is, no import needed. Called before each prompt run and after a kernel restart -- both leave the namespace out of sync with the current tool selection."
+    tools = get_tool_list(nb.tool_selection) + nb.tools
+    _shell.push({fn.__name__: fn for fn in tools})
+
+_push_tools()  # populate the namespace once at startup, matching the current (default) tool selection
 
 # %% ../nbs/01_cells.ipynb #ac17911d
 def llm_context(nb:Notebook, cur_id:int|None=None) -> str:
@@ -544,6 +551,7 @@ ICONS = {
     'folder':        ('M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z',),
     'document-text': ('M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',),
     'question-mark-circle': ('M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z',),
+    'wrench-screwdriver': ('M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z',),
 }  # heroicon name -> tuple of SVG path 'd' attributes
 
 
@@ -1004,6 +1012,24 @@ def help_modal() -> FT:
         id='help-modal', cls='modal')
 
 
+# %% ../nbs/01_cells.ipynb #b330d141
+_TOOL_SOURCE_LABELS = {'boopiter': 'boopiter', 'slmn-nbtools': 'nbtools', 'slmn-misc': 'misc', 'slmn-remote': 'remote'}  # key (matches DEFAULT_TOOL_SELECTION) -> short label shown in the Tools menu, without the 'slmn-' implementation detail
+
+def tools_menu(icon_cls:str) -> FT:
+    "Wrench-icon 'Tools' menu: hover to see checkboxes toggling which tool sources (see _TOOL_SOURCE_LABELS/nb.tool_selection) get offered to the LLM on Prompt-cell runs -- see get_tool_list(). DaisyUI's dropdown-hover opens/closes purely via CSS on mouseenter/mouseleave, so no close button is needed."
+    rows = [
+        Li(Label(
+            Input(type='checkbox', checked=nb.tool_selection.get(key, False), cls='checkbox checkbox-sm',
+                  hx_post=toggle_tool_source.to(key=key), hx_swap='none'),
+            Span(label), cls='flex items-center gap-2 px-2 py-1 cursor-pointer'))
+        for key, label in _TOOL_SOURCE_LABELS.items()
+    ]
+    return Div(
+        fh.Button(Icon('wrench-screwdriver', cls=icon_cls), data_tip='Tool selection', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom'),
+        Ul(Li(Div('Tools', cls='menu-title')), *rows, tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-36 p-1 shadow'),
+        cls='dropdown dropdown-hover dropdown-bottom')
+
+
 # %% ../nbs/01_cells.ipynb #8392ed2d
 def top_bar() -> FT:
     "The whole navbar: file menu + logo + filename on the left, model picker + kernel/theme controls on the right."
@@ -1015,10 +1041,11 @@ def top_bar() -> FT:
     # looking bigger than the moon/sun -- these are stroked outline icons vs. theme_swap()'s filled
     # ones, so the same box reads heavier); 18px still read as closer to the smaller end.
     icon_cls = 'size-[19px]'
-    # No flex-wrap on this inner group -- these five stay together as one atomic unit when the
+    # No flex-wrap on this inner group -- these six stay together as one atomic unit when the
     # outer ctrls row wraps, instead of the model dropdown "stealing" just the first icon's worth
     # of leftover space on its own line and orphaning it from its siblings.
     icon_btns = Div(
+        tools_menu(icon_cls),
         fh.Button(Icon('question-mark-circle', cls=icon_cls), data_tip='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   onclick="document.getElementById('help-modal').showModal()"),
         fh.Button(Icon('x-circle', cls=icon_cls), data_tip='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
@@ -1028,9 +1055,12 @@ def top_bar() -> FT:
         fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
         theme_swap(), cls='flex items-center gap-1 shrink-0')
-    ctrls = Div(model_dropdown(), icon_btns, cls='flex items-center gap-1 flex-wrap justify-end')
+    # flex-wrap by default (so brand/ctrls stack on genuinely narrow/mobile viewports -- see the
+    # mobile-layout fix earlier), but md:flex-nowrap forces a single row at tablet width and up, so
+    # adding one more icon button doesn't tip ordinary desktop widths into wrapping unnecessarily.
+    ctrls = Div(model_dropdown(), icon_btns, cls='flex items-center gap-1 flex-wrap md:flex-nowrap justify-end')
     return Div(brand, ctrls, file_browser_modal(), help_modal(), context_menu(),
-               cls='navbar bg-base-200 shadow px-4 flex flex-wrap items-center justify-between gap-y-1 shrink-0')
+               cls='navbar bg-base-200 shadow px-4 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-1 shrink-0')
 
 
 # %% ../nbs/01_cells.ipynb #c747ff8e
@@ -1175,8 +1205,10 @@ def rename(name:str) -> FT:
 # %% ../nbs/01_cells.ipynb #e8700aac
 @rt
 def restart_kernel() -> str:
-    "Reset the shared IPython shell's namespace, clearing all user-defined variables/functions."
+    "Reset the shared IPython shell's namespace, clearing all user-defined variables/functions, then re-pushing nb/add_tool/the current tool selection -- _shell.reset() wipes those along with everything else."
     _shell.reset()          # clear kernel namespace
+    _shell.push({'nb': nb, 'add_tool': add_tool})
+    _push_tools()
     return ''
 
 # %% ../nbs/01_cells.ipynb #eb1ffa14
@@ -1200,6 +1232,13 @@ def interrupt_kernel() -> str:
                 ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, None)
     return ''
 
+
+# %% ../nbs/01_cells.ipynb #ac61d105
+@rt
+def toggle_tool_source(key:str) -> str:
+    "Toggle one entry in nb.tool_selection (the wrench-icon Tools menu -- see top_bar()). The checkbox already flips itself natively in the browser; this just keeps the server-side selection in sync, so no DOM update is needed in response."
+    nb.tool_selection[key] = not nb.tool_selection.get(key, False)
+    return ''
 
 # %% ../nbs/01_cells.ipynb #59d0d7be
 @rt
