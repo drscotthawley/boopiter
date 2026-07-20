@@ -17,6 +17,7 @@ format:
       light: arrow
       dark: dracula
     css: styles.css
+    include-after-body: theme-toggle.html
     toc: true
     keep-md: true
   commonmark: default
