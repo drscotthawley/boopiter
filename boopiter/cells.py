@@ -6,18 +6,19 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'run_code_poll', 'Cell', 'pending_code_cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll',
-           'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
-           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
-           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
-           'fname_display', 'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model',
-           'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal',
-           'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
-           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
-           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
-           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'run_code_poll', 'Cell', 'pending_code_cell', 'run_code_cell', 'Notebook', 'pending_prompt_cell',
+           'run_prompt_poll', 'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn',
+           'cell_toolbar', 'type_dropdown', 'cell_header', 'cell_body', 'render_output_blocks', 'code_view',
+           'code_editor', 'render_cell', 'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap',
+           'save_notebook', 'load_notebook', 'fname_display', 'rename_form', 'brain_menu', 'set_standard_model',
+           'set_reasoning_model', 'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu',
+           'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping',
+           'logo_png', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server',
+           'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type',
+           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
+           'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected',
+           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
+           'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re
@@ -139,13 +140,6 @@ def _collapse_cr(s:str) -> str:
     "Collapse \\r-overwritten text (tqdm-style progress bars) down to each line's final state."
     return '\n'.join(ln.split('\r')[-1] for ln in s.split('\n'))
 
-def _best_block(fmt:dict) -> dict:
-    "The richest available rendering of a formatted-object MIME dict, as an output block; falls back to its plain-text repr."
-    for mime in _MIME_PRIORITY:
-        if mime in fmt:
-            return {'type':'display', 'mime':mime, 'data':fmt[mime]}
-    return {'type':'stream', 'mime':None, 'data':fmt.get('text/plain', '')}
-
 # %% ../nbs/01_cells.ipynb #237ec61a
 def _best_block(fmt:dict) -> dict:
     "The richest available rendering of a formatted-object MIME dict, as an output block; falls back to its plain-text repr."
@@ -201,60 +195,8 @@ class _RunState:
         self.thread:threading.Thread|None = None
 
 _run_state:'_RunState|None' = None  # the one code cell currently executing in the background, if any
-
-class _TeeStream(_pyio.TextIOBase):
-    "A writable stream that appends every write() straight into a _RunState's buffer, so a poll request mid-execution can see output as it's produced -- unlike capture_output(), which only exposes text once its `with` block exits. Subclassing TextIOBase (rather than a bare object) gives it a real isatty()/readable()/etc. file protocol -- without it, libraries like tqdm that probe for a proper file object fall back to appending a newline per update instead of overwriting in place with '\\r'."
-    def __init__(self, state:_RunState): self.state = state
-    def writable(self) -> bool: return True
-    def write(self, s:str) -> int:
-        if s: self.state.buffer.append(s)
-        return len(s)
-
-def _run_code_bg(src:str, state:_RunState) -> None:
-    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
-    try:
-        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
-            res = _shell.orig_run(src)
-    finally:
-        sys.stdout, sys.stderr = old_out, old_err
-    blocks = []
-    if res.error_in_exec is not None:
-        e = res.error_in_exec
-        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
-    text = _collapse_cr(''.join(state.buffer))
-    if text:
-        blocks.append({'type':'stream', 'mime':None, 'data':text})
-    blocks += [_best_block(o.data) for o in io.outputs]
-    if res.result is not None:
-        fmt, _md = _shell.display_formatter.format(res.result)
-        blocks.append(_best_block(fmt))
-    blocks += _flush_figures()
-    state.blocks = blocks
-    state.done = True
-
-def _run_output_div(id:int, text:str) -> FT:
-    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
-    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
-    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
-               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
-
-@rt
-def run_code_poll(id:int) -> FT|tuple:
-    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
-    global _run_state
-    c = nb.get(id)
-    if not c: return ''
-    st = _run_state
-    if st is None or st.cell_id != id:
-        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
-    if not st.done:
-        return _run_output_div(id, ''.join(st.buffer))
-    c.output = st.blocks
-    _run_state = None
-    return '', render_cell(c, oob=True)
-
+_run_all_queue:list[int] = []  # remaining code-cell ids for an in-flight Run All (drained by run_code_poll as each cell finishes)
+_run_all_current:'int|None' = None  # the cell id Run All is currently on; only its completion advances the queue, so a solo run's completion can never hijack a lingering batch
 
 # %% ../nbs/01_cells.ipynb #fb206bb5
 class _TeeStream(_pyio.TextIOBase):
@@ -264,52 +206,6 @@ class _TeeStream(_pyio.TextIOBase):
     def write(self, s:str) -> int:
         if s: self.state.buffer.append(s)
         return len(s)
-
-def _run_code_bg(src:str, state:_RunState) -> None:
-    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
-    try:
-        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
-            res = _shell.orig_run(src)
-    finally:
-        sys.stdout, sys.stderr = old_out, old_err
-    blocks = []
-    if res.error_in_exec is not None:
-        e = res.error_in_exec
-        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
-    text = _collapse_cr(''.join(state.buffer))
-    if text:
-        blocks.append({'type':'stream', 'mime':None, 'data':text})
-    blocks += [_best_block(o.data) for o in io.outputs]
-    if res.result is not None:
-        fmt, _md = _shell.display_formatter.format(res.result)
-        blocks.append(_best_block(fmt))
-    blocks += _flush_figures()
-    state.blocks = blocks
-    state.done = True
-
-def _run_output_div(id:int, text:str) -> FT:
-    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
-    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
-    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
-               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
-
-@rt
-def run_code_poll(id:int) -> FT|tuple:
-    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
-    global _run_state
-    c = nb.get(id)
-    if not c: return ''
-    st = _run_state
-    if st is None or st.cell_id != id:
-        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
-    if not st.done:
-        return _run_output_div(id, ''.join(st.buffer))
-    c.output = st.blocks
-    _run_state = None
-    return '', render_cell(c, oob=True)
-
 
 # %% ../nbs/01_cells.ipynb #d05fcd2b
 def _run_code_bg(src:str, state:_RunState) -> None:
@@ -336,28 +232,6 @@ def _run_code_bg(src:str, state:_RunState) -> None:
     state.blocks = blocks
     state.done = True
 
-def _run_output_div(id:int, text:str) -> FT:
-    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
-    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
-    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
-               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
-
-@rt
-def run_code_poll(id:int) -> FT|tuple:
-    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
-    global _run_state
-    c = nb.get(id)
-    if not c: return ''
-    st = _run_state
-    if st is None or st.cell_id != id:
-        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
-    if not st.done:
-        return _run_output_div(id, ''.join(st.buffer))
-    c.output = st.blocks
-    _run_state = None
-    return '', render_cell(c, oob=True)
-
-
 # %% ../nbs/01_cells.ipynb #ba7d430f
 def _run_output_div(id:int, text:str) -> FT:
     "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
@@ -365,27 +239,11 @@ def _run_output_div(id:int, text:str) -> FT:
     return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
                hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
 
-@rt
-def run_code_poll(id:int) -> FT|tuple:
-    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
-    global _run_state
-    c = nb.get(id)
-    if not c: return ''
-    st = _run_state
-    if st is None or st.cell_id != id:
-        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
-    if not st.done:
-        return _run_output_div(id, ''.join(st.buffer))
-    c.output = st.blocks
-    _run_state = None
-    return '', render_cell(c, oob=True)
-
-
 # %% ../nbs/01_cells.ipynb #981af213
 @rt
 def run_code_poll(id:int) -> FT|tuple:
     "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
-    global _run_state
+    global _run_state, _run_all_queue, _run_all_current
     c = nb.get(id)
     if not c: return ''
     st = _run_state
@@ -395,6 +253,16 @@ def run_code_poll(id:int) -> FT|tuple:
         return _run_output_div(id, ''.join(st.buffer))
     c.output = st.blocks
     _run_state = None
+    if id == _run_all_current:  # only the cell Run All is currently on advances the batch -- a solo play/Shift-Enter completion never does, even if a stale queue somehow lingers
+        _run_all_current = None
+        if any(b['type'] == 'error' for b in st.blocks):
+            _run_all_queue = []  # stop-on-error: abandon the rest of the Run All sequence
+        else:
+            while _run_all_queue:  # skip any queued cells that were deleted mid-run
+                nxt = nb.get(_run_all_queue.pop(0))
+                if nxt:
+                    _run_all_current = nxt.id
+                    return '', render_cell(c, oob=True), _oob(f'outerHTML:#cell-{nxt.id}', run_code_cell(nxt, scroll=True))
     return '', render_cell(c, oob=True)
 
 
@@ -418,21 +286,30 @@ class Cell:
 
 
 # %% ../nbs/01_cells.ipynb #ef49cd37
-def pending_code_cell(c:'Cell', text:str='') -> FT:
-    "Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done."
+def pending_code_cell(c:'Cell', text:str='', scroll:bool=False) -> FT:
+    "Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done. `scroll=True` (set only by Run All) tags the cell div so the client scrolls it into view as it starts -- see boopScrollRunAll() in edit.js."
+    attrs = {'data_runall_scroll': '1'} if scroll else {}
     return _cell_outer(c, cell_header(c, running=True),
                         Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto'),
-                        _run_output_div(c.id, text))
+                        _run_output_div(c.id, text), **attrs)
 
-def _start_code_run(c:'Cell') -> FT:
-    "Kick off `c.source` running in a background thread and return a placeholder that polls for its progress; see run_code_poll()."
+# %% ../nbs/01_cells.ipynb #6395ca51
+def _start_code_run(c:'Cell', scroll:bool=False) -> FT:
+    "Kick off `c.source` running in a background thread and return a placeholder that polls for its progress; see run_code_poll(). `scroll` is forwarded to the placeholder -- see run_code_cell/pending_code_cell."
     global _run_state
     if nb.selected == c.id: nb.selected = None  # revert to the static (fast) view immediately, like every other cell type
     state = _RunState(c.id)
     state.thread = threading.Thread(target=_run_code_bg, args=(c.source, state), daemon=True)
     _run_state = state
     state.thread.start()
-    return pending_code_cell(c)
+    return pending_code_cell(c, scroll=scroll)
+
+def run_code_cell(c:'Cell', scroll:bool=False) -> FT:
+    "Tell one code cell to run: stamp it with the current time, then kick off its streaming background execution. The single shared entry point for the play button, Shift-Enter, and Run All (which passes scroll=True so each cell scrolls into view as it starts). A solo run (scroll=False) cancels any in-flight or leftover Run All, so it can never chain into unrelated cells."
+    global _run_all_queue, _run_all_current
+    if not scroll: _run_all_queue, _run_all_current = [], None
+    c.ts = datetime.now().strftime('%I:%M:%S %p')
+    return _start_code_run(c, scroll=scroll)
 
 # %% ../nbs/01_cells.ipynb #39f24354
 class Notebook:
@@ -579,62 +456,6 @@ def _run_prompt_bg(context:str, model:str, tools:list, think:str|None, state:_Ru
         state.blocks = (f'(error calling {model}: {e})', None)
     state.done = True
 
-def _start_prompt_run(prompt_id:int) -> None:
-    "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make). Uses nb.active_model() (standard or reasoning, per the brain-icon toggle) and, while reasoning is active, nb.reasoning_effort."
-    global _prompt_state
-    c = nb.get(prompt_id)
-    state = _RunState(prompt_id)
-    model = nb.active_model()
-    if model:
-        tools = get_tool_list(nb.tool_selection) + nb.tools
-        _push_tools()  # keep the shell namespace in sync before the model can suggest calling any of these
-        think = nb.reasoning_effort if nb.use_reasoning else None
-        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), model, tools, think, state), daemon=True)
-        _prompt_state = state
-        state.thread.start()
-    else:
-        state.blocks = (stub_reply(nb, c.source), None)
-        state.done = True
-        _prompt_state = state
-
-def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
-    "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
-    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
-    parts = [Span('Assistant', cls='font-semibold text-sm'), Span(' Tricky...', cls='text-cyan-400 animate-pulse text-[15px] ml-1')]
-    body = [Div(*parts, cls='flex items-center gap-1')]
-    if text:
-        body.append(Pre(text, cls='text-sm whitespace-pre-wrap mt-1 opacity-80'))
-    return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
-               hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
-               hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
-
-def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
-    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
-    c = nb.get(prompt_id)
-    if not c or c.ctype != 'prompt': return None
-    i = nb.index(c.id)
-    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-    if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
-        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
-    else:
-        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
-    return nxt
-
-@rt
-def run_prompt_poll(id:int) -> FT|str:
-    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
-    global _prompt_state
-    st = _prompt_state
-    if st is None or st.cell_id != id:
-        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
-    if not st.done:
-        return pending_prompt_cell(id, ''.join(st.buffer))
-    content, details = st.blocks
-    _prompt_state = None
-    c2 = _finalize_prompt_reply(id, content, details)
-    return render_cell(c2) if c2 else ''
-
 # %% ../nbs/01_cells.ipynb #136e4da3
 def _start_prompt_run(prompt_id:int) -> None:
     "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make). Uses nb.active_model() (standard or reasoning, per the brain-icon toggle) and, while reasoning is active, nb.reasoning_effort."
@@ -654,44 +475,6 @@ def _start_prompt_run(prompt_id:int) -> None:
         state.done = True
         _prompt_state = state
 
-def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
-    "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
-    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
-    parts = [Span('Assistant', cls='font-semibold text-sm'), Span(' Tricky...', cls='text-cyan-400 animate-pulse text-[15px] ml-1')]
-    body = [Div(*parts, cls='flex items-center gap-1')]
-    if text:
-        body.append(Pre(text, cls='text-sm whitespace-pre-wrap mt-1 opacity-80'))
-    return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
-               hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
-               hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
-
-def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
-    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
-    c = nb.get(prompt_id)
-    if not c or c.ctype != 'prompt': return None
-    i = nb.index(c.id)
-    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-    if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
-        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
-    else:
-        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
-    return nxt
-
-@rt
-def run_prompt_poll(id:int) -> FT|str:
-    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
-    global _prompt_state
-    st = _prompt_state
-    if st is None or st.cell_id != id:
-        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
-    if not st.done:
-        return pending_prompt_cell(id, ''.join(st.buffer))
-    content, details = st.blocks
-    _prompt_state = None
-    c2 = _finalize_prompt_reply(id, content, details)
-    return render_cell(c2) if c2 else ''
-
 # %% ../nbs/01_cells.ipynb #17498997
 def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
     "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
@@ -703,33 +486,6 @@ def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
     return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
                hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
                hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
-
-def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
-    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
-    c = nb.get(prompt_id)
-    if not c or c.ctype != 'prompt': return None
-    i = nb.index(c.id)
-    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-    if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
-        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
-    else:
-        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
-    return nxt
-
-@rt
-def run_prompt_poll(id:int) -> FT|str:
-    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
-    global _prompt_state
-    st = _prompt_state
-    if st is None or st.cell_id != id:
-        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
-    if not st.done:
-        return pending_prompt_cell(id, ''.join(st.buffer))
-    content, details = st.blocks
-    _prompt_state = None
-    c2 = _finalize_prompt_reply(id, content, details)
-    return render_cell(c2) if c2 else ''
 
 # %% ../nbs/01_cells.ipynb #4aa994f4
 def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
@@ -744,20 +500,6 @@ def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell
     else:
         nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
     return nxt
-
-@rt
-def run_prompt_poll(id:int) -> FT|str:
-    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
-    global _prompt_state
-    st = _prompt_state
-    if st is None or st.cell_id != id:
-        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
-    if not st.done:
-        return pending_prompt_cell(id, ''.join(st.buffer))
-    content, details = st.blocks
-    _prompt_state = None
-    c2 = _finalize_prompt_reply(id, content, details)
-    return render_cell(c2) if c2 else ''
 
 # %% ../nbs/01_cells.ipynb #623f0a3a
 @rt
@@ -881,10 +623,6 @@ def _svg_icon(paths, cls:str='size-4', filled:bool=False) -> FT:
     return fh.Svg(*[render(item) for item in paths],
                   xmlns='http://www.w3.org/2000/svg', fill='currentColor' if filled else 'none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
-
-def Icon(name:str, cls:str='size-4', filled:bool=False) -> FT:
-    "A heroicons SVG by name (see ICONS), inlined so `stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too) matches the button's text color. Thin wrapper over _svg_icon()."
-    return _svg_icon(ICONS[name], cls, filled)
 
 # %% ../nbs/01_cells.ipynb #c82fd27d
 def Icon(name:str, cls:str='size-4', filled:bool=False) -> FT:
@@ -1601,14 +1339,6 @@ def set_reasoning_effort(effort:str) -> str:
 
 # %% ../nbs/01_cells.ipynb #4c41b4b9
 @rt
-def toggle_reasoning() -> FT:
-    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
-    prev_active = nb.active_model()
-    nb.use_reasoning = not nb.use_reasoning
-    _apply_active_model(prev_active)
-    return brain_menu(_TOPBAR_ICON_CLS_LG)
-
-@rt
 def set_reasoning_effort(effort:str) -> str:
     "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
     nb.reasoning_effort = effort
@@ -1759,20 +1489,7 @@ def _plugin_panel(name:str) -> FT:
                hx_get=plugin_panel_poll.to(name=name), hx_target=f'#{dom_id}', hx_swap='outerHTML',
                hx_trigger="every 2s [this.closest('.dropdown').matches(':hover')]")
 
-@rt
-def plugin_panel_poll(name:str) -> FT:
-    "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
-    return _plugin_panel(name)
-
-def _plugin_button(pl:Plugin) -> FT:
-    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
-    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
-                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
-    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
-                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
-               cls='dropdown dropdown-hover dropdown-bottom')
-
-# %% ../nbs/01_cells.ipynb #d6d0e737
+# %% ../nbs/01_cells.ipynb #18241b4e
 def _plugin_panel(name:str) -> FT:
     "Self-polling wrapper around the named plugin's render(): re-fetches itself (outerHTML, carrying its own hx-trigger along so polling continues) roughly every 2s, but the JS trigger filter only actually issues that request while the mouse is over the plugin's dropdown -- so the panel is inert (no requests) until hovered, and stops again the moment you mouse away. Mirrors the _run_output_div/run_code_poll self-polling idiom already used for streaming code/prompt cells. Keyed by name (not list index) -- fastcore's qp() treats 0 as falsy (0 in (False,None) is True in Python) and silently drops an idx=0 query param, so an int index is a trap for the first-registered plugin."
     pl = next(p for p in PLUGINS if p.name == name)
@@ -1781,32 +1498,11 @@ def _plugin_panel(name:str) -> FT:
                hx_get=plugin_panel_poll.to(name=name), hx_target=f'#{dom_id}', hx_swap='outerHTML',
                hx_trigger="every 2s [this.closest('.dropdown').matches(':hover')]")
 
-@rt
-def plugin_panel_poll(name:str) -> FT:
-    "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
-    return _plugin_panel(name)
-
-def _plugin_button(pl:Plugin) -> FT:
-    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
-    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
-                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
-    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
-                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
-               cls='dropdown dropdown-hover dropdown-bottom')
-
 # %% ../nbs/01_cells.ipynb #a2d2ed8b
 @rt
 def plugin_panel_poll(name:str) -> FT:
     "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
     return _plugin_panel(name)
-
-def _plugin_button(pl:Plugin) -> FT:
-    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
-    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
-                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
-    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
-                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
-               cls='dropdown dropdown-hover dropdown-bottom')
 
 # %% ../nbs/01_cells.ipynb #9b6044a8
 def _plugin_button(pl:Plugin) -> FT:
@@ -1855,7 +1551,7 @@ def top_bar() -> FT:
         fh.Button(Icon('arrow-path', cls=_TOPBAR_ICON_CLS_LG), data_tip='Restart kernel', cls=tt_cls,
                   hx_post=restart_kernel, hx_swap='none'),
         fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls=tt_cls,
-                  hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
+                  hx_post=run_all, hx_swap='none'),
         theme_swap(), cls='flex items-center gap-1 shrink-0')
     # flex-wrap by default (so brand/ctrls stack on genuinely narrow/mobile viewports -- see the
     # mobile-layout fix earlier), but md:flex-nowrap forces a single row at tablet width and up, so
@@ -2020,10 +1716,14 @@ def restart_kernel() -> str:
 # %% ../nbs/01_cells.ipynb #eb1ffa14
 @rt
 def run_all() -> FT:
-    "Run every Code cell, top to bottom, in place (Prompt/Note/Raw/Assistant cells are left untouched)."
-    for c in nb.cells:
-        if c.ctype == 'code': c.output = run_code(c.source)
-    return render_nb()
+    "Run every code cell top-to-bottom, one at a time -- exactly like clicking play on each in turn. Each cell stamps its own timestamp, streams its own output, and scrolls into view as it starts; the sequence stops at the first cell that errors (see run_code_poll's chaining). Prompt/Note/Raw/Assistant cells are skipped."
+    global _run_all_queue, _run_all_current
+    ids = [c.id for c in nb.cells if c.ctype == 'code']
+    if not ids: return ''
+    _run_all_queue = ids[1:]
+    first = nb.get(ids[0])
+    _run_all_current = first.id
+    return _oob(f'outerHTML:#cell-{first.id}', run_code_cell(first, scroll=True))
 
 # %% ../nbs/01_cells.ipynb #76a633a6
 @rt
@@ -2109,7 +1809,7 @@ def run_cell(id:int) -> FT:
     "Run this cell (Code: kick off background execution and return a placeholder that streams its progress; Prompt: kick off the LLM call and return a placeholder that streams the reply in), so the caller can target just this cell instead of the whole notebook."
     c = nb.get(id)
     if c and c.ctype == 'code':
-        return _start_code_run(c)
+        return run_code_cell(c)
     elif c and c.ctype == 'prompt':
         _start_prompt_run(id)
         return pending_prompt_cell(id)
@@ -2351,7 +2051,7 @@ def save_cell(id:int, source:str) -> FT|tuple:
     if not c: return render_nb()
     c.source = source
     if c.ctype == 'code':
-        return _start_code_run(c)
+        return run_code_cell(c)
     elif c.ctype == 'prompt':
         _start_prompt_run(id)
         i = nb.index(c.id)

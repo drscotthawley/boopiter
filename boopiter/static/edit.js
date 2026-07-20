@@ -99,12 +99,24 @@ function boopSyncAllEditors(){
 function boopSaveNotebook(){
   boopSyncAllEditors().then(function(){ htmx.ajax('POST', '/save_now', {swap:'none'}); });
 }
+// Guards against a rapid double Ctrl/Cmd-- (key-repeat, or just a fast double-press before the
+// first split's DOM swap lands) firing two overlapping /split requests against the same
+// pre-split state -- both would read the same not-yet-truncated source and each spawn their own
+// new cell, leaving an exact duplicate behind. One in-flight split per source (id, or 'composer')
+// at a time; the lock clears once that request settles, success or failure.
+var _boopSplitInFlight = new Set();
 function boopComposerSplit(cm){
+  if(_boopSplitInFlight.has('composer')) return;
+  _boopSplitInFlight.add('composer');
   htmx.ajax('POST', '/split', {target:'#notebook', swap:'beforeend',
-    values:{source: cm.getValue(), pos: cm.indexFromPos(cm.getCursor())}});
+    values:{source: cm.getValue(), pos: cm.indexFromPos(cm.getCursor())}})
+    .finally(function(){ _boopSplitInFlight.delete('composer'); });
 }
 function boopSplitCell(id, pos){
-  htmx.ajax('POST', '/split_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML', values:{pos: pos}});
+  if(_boopSplitInFlight.has(id)) return;
+  _boopSplitInFlight.add(id);
+  htmx.ajax('POST', '/split_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML', values:{pos: pos}})
+    .finally(function(){ _boopSplitInFlight.delete(id); });
 }
 function boopMakeCM(ta, isComposer){
   var dark = window._boopDark !== false;
@@ -165,6 +177,15 @@ function boopRenderAnsi(root){
     el.innerHTML = au.ansi_to_html(el.textContent);
   });
 }
+function boopScrollRunAll(root){
+  // Run All tags each cell's placeholder with data-runall-scroll (see pending_code_cell) as it
+  // starts, so the view follows down the notebook cell-by-cell. Solo play/Shift-Enter runs never
+  // set the attribute, so a cell you clicked yourself never jumps around. Fires via the same
+  // htmx.onLoad hook that lands the placeholder (works for OOB swaps too, like boopRenderAnsi).
+  if(!root || !root.querySelector) return;  // only ever act on the freshly-swapped content -- never a document-wide scan, which could scroll to a stale tag left elsewhere
+  var el = (root.matches && root.matches('[data-runall-scroll]')) ? root : root.querySelector('[data-runall-scroll]');
+  if(el){ el.removeAttribute('data-runall-scroll'); el.scrollIntoView({behavior:'smooth', block:'center'}); }
+}
 function boopInitEditors(root){
   var scope = (root && root.querySelectorAll) ? root : document;
   scope.querySelectorAll('textarea[data-cm]:not([data-cminit])').forEach(function(ta){
@@ -185,5 +206,6 @@ function boopInitEditors(root){
   });
   boopRenderAnsi(scope);
   if(window.boopHighlight) boopHighlight(scope);  // static code-cell views + note-cell fences alike
+  boopScrollRunAll(root);  // pass root, not scope -- scope falls back to document on full page load, which must never drive a scroll
 }
 if(window.htmx) htmx.onLoad(boopInitEditors);
