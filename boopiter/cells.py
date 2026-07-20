@@ -6,18 +6,18 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'run_code_poll', 'Cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll', 'add_tool', 'llm_context',
-           'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header',
-           'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell', 'render_cell_edit',
-           'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook', 'fname_display',
-           'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model', 'toggle_reasoning',
-           'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu',
-           'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse',
-           'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel', 'run_all',
-           'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell',
-           'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert',
-           'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected',
-           'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'run_code_poll', 'Cell', 'pending_code_cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll',
+           'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
+           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
+           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
+           'fname_display', 'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model',
+           'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal',
+           'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
+           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
+           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
+           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
+           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re
@@ -416,6 +416,23 @@ class Cell:
         self.details = details  # assistant cells only: raw HTML <details> block (model/tokens/reasoning) shown above the reply -- kept OUT of source so it never pollutes llm_context()
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
+
+# %% ../nbs/01_cells.ipynb #ef49cd37
+def pending_code_cell(c:'Cell', text:str='') -> FT:
+    "Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done."
+    return _cell_outer(c, cell_header(c, running=True),
+                        Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto'),
+                        _run_output_div(c.id, text))
+
+def _start_code_run(c:'Cell') -> FT:
+    "Kick off `c.source` running in a background thread and return a placeholder that polls for its progress; see run_code_poll()."
+    global _run_state
+    if nb.selected == c.id: nb.selected = None  # revert to the static (fast) view immediately, like every other cell type
+    state = _RunState(c.id)
+    state.thread = threading.Thread(target=_run_code_bg, args=(c.source, state), daemon=True)
+    _run_state = state
+    state.thread.start()
+    return pending_code_cell(c)
 
 # %% ../nbs/01_cells.ipynb #39f24354
 class Notebook:
