@@ -36,6 +36,41 @@ for _mime in _MIME_PRIORITY:
     if _mime in _shell.display_formatter.formatters:
         _shell.display_formatter.formatters[_mime].enabled = True
 
+# %% ../nbs/03_kernel.ipynb #stdoutrtr1
+class _StdoutRouter(_pyio.TextIOBase):
+    "Installed once, at import time, as the process's real sys.stdout/sys.stderr. sys.stdout is inherently a single process-global object -- there's no such thing as a genuinely thread-local one -- so directly reassigning it (the old approach: `sys.stdout = _TeeStream(state)`, restored after) affects every thread for as long as it's swapped, not just the one running a background code cell. A concurrent write from the request-handling thread, another background run, or anything else landed in whichever cell's buffer happened to be installed at that moment. This router instead stays fixed as the actual global stream and dispatches each write() by looking up a per-thread registration (threading.local): whichever thread has bind()'d a target gets routed there; every other thread falls straight through to the real underlying stream, untouched. Reuse this bind()/unbind() pattern for any future background work that needs to capture its own stdout/stderr without cross-contaminating whatever else is running concurrently."
+    _local = threading.local()
+
+    def __init__(self, real):
+        self._real = real
+
+    def writable(self) -> bool: return True
+
+    def write(self, s:str) -> int:
+        target = getattr(self._local, 'target', None)
+        return (target or self._real).write(s)
+
+    def flush(self) -> None:
+        target = getattr(self._local, 'target', None)
+        (target if target is not None and hasattr(target, 'flush') else self._real).flush()
+
+    def isatty(self) -> bool:
+        "False while bound (matches _TeeStream's own isatty()==False, so tqdm etc. use '\\r'-style overwrites); delegates to the real stream otherwise, so terminal behavior outside a capture is unaffected."
+        return False if getattr(self._local, 'target', None) is not None else self._real.isatty()
+
+    @classmethod
+    def bind(cls, target) -> None:
+        "Route the CALLING thread's writes to `target` until unbind(). Only affects this thread -- every other thread keeps writing straight through to the real stream."
+        cls._local.target = target
+
+    @classmethod
+    def unbind(cls) -> None:
+        "Stop routing the calling thread's writes anywhere special -- back to the real stream."
+        cls._local.target = None
+
+_stdout_router, _stderr_router = _StdoutRouter(sys.stdout), _StdoutRouter(sys.stderr)
+sys.stdout, sys.stderr = _stdout_router, _stderr_router
+
 # %% ../nbs/03_kernel.ipynb #fa801f24
 def _collapse_cr(s:str) -> str:
     "Collapse \\r-overwritten text (tqdm-style progress bars) down to each line's final state."
@@ -67,14 +102,19 @@ def _flush_figures() -> list[dict]:
 
 # %% ../nbs/03_kernel.ipynb #d45303a2
 def run_code(src:str) -> list[dict]:
-    "Execute `src` in the shared shell; return an ordered list of output blocks (each a dict with 'type' -- stream/error/display -- and, for display blocks, a 'mime' type). See Cell.output."
-    with capture_output() as io:
-        res = _shell.orig_run(src)  # bypass toolslm's run_cell wrapper -- it discards stderr and any display() output, keeping only stdout
+    "Execute `src` in the shared shell; return an ordered list of output blocks (each a dict with 'type' -- stream/error/display -- and, for display blocks, a 'mime' type). See Cell.output. Routes stdout/stderr through _StdoutRouter (same pattern as _run_code_bg) rather than IPython's own capture_output(stdout=True), whose internal swap is a raw global reassignment -- letting this call and a concurrent _run_code_bg (different threads) safely capture their own output at the same time instead of one clobbering the other's capture window."
+    buffer:list[str] = []
+    _StdoutRouter.bind(_TeeStream(buffer))
+    try:
+        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already routed to `buffer` above
+            res = _shell.orig_run(src)  # bypass toolslm's run_cell wrapper -- it discards stderr and any display() output, keeping only stdout
+    finally:
+        _StdoutRouter.unbind()
     blocks = []
     if res.error_in_exec is not None:
         e = res.error_in_exec
         blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
-    text = _collapse_cr((io.stdout or '') + (io.stderr or ''))
+    text = _collapse_cr(''.join(buffer))
     if text:
         blocks.append({'type':'stream', 'mime':None, 'data':text})
     blocks += [_best_block(o.data) for o in io.outputs]  # explicit display(...) calls, in call order
@@ -96,23 +136,22 @@ class _RunState:
 
 # %% ../nbs/03_kernel.ipynb #fb206bb5
 class _TeeStream(_pyio.TextIOBase):
-    "A writable stream that appends every write() straight into a _RunState's buffer, so a poll request mid-execution can see output as it's produced -- unlike capture_output(), which only exposes text once its `with` block exits. Subclassing TextIOBase (rather than a bare object) gives it a real isatty()/readable()/etc. file protocol -- without it, libraries like tqdm that probe for a proper file object fall back to appending a newline per update instead of overwriting in place with '\\r'."
-    def __init__(self, state:_RunState): self.state = state
+    "A writable stream that appends every write() straight into `buffer` (a plain list of text chunks, in arrival order), so a poll request mid-execution can see output as it's produced -- unlike capture_output(), which only exposes text once its `with` block exits. Bound to the calling thread only via _StdoutRouter.bind() -- never assigned to sys.stdout/stderr directly. Subclassing TextIOBase (rather than a bare object) gives it a real isatty()/readable()/etc. file protocol -- without it, libraries like tqdm that probe for a proper file object fall back to appending a newline per update instead of overwriting in place with '\\r'."
+    def __init__(self, buffer:list[str]): self.buffer = buffer
     def writable(self) -> bool: return True
     def write(self, s:str) -> int:
-        if s: self.state.buffer.append(s)
+        if s: self.buffer.append(s)
         return len(s)
 
 # %% ../nbs/03_kernel.ipynb #d05fcd2b
 def _run_code_bg(src:str, state:_RunState) -> None:
-    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
+    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end. Binds this thread's output via _StdoutRouter -- NOT a raw sys.stdout/stderr reassignment -- so a concurrent write from any other thread (another background run, the request-handling thread, uvicorn's own logging) is never captured here by mistake; see _StdoutRouter."
+    _StdoutRouter.bind(_TeeStream(state.buffer))
     try:
-        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
+        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already routed to state.buffer above
             res = _shell.orig_run(src)
     finally:
-        sys.stdout, sys.stderr = old_out, old_err
+        _StdoutRouter.unbind()
     blocks = []
     if res.error_in_exec is not None:
         e = res.error_in_exec
