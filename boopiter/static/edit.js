@@ -1,4 +1,9 @@
 
+function boopCancelEdit(id){
+  // Same request the Cancel button makes -- exits whichever editing mode this cell is in
+  // (CodeMirror or the plain textarea) back to its static view, discarding unsaved edits.
+  htmx.ajax('GET', '/view_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML'});
+}
 function boopSave(id){
   var cm = window['_boopcm_'+id];
   if(cm) cm.save();
@@ -62,7 +67,8 @@ function boopMakeCM(ta, isComposer){
       'Shift-Enter': function(){ boopSave(id); }, 'Ctrl-Enter': function(){ boopSave(id); }, 'Cmd-Enter': function(){ boopSave(id); },
       'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); },
       'Shift-Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
-      'Shift-Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); }
+      'Shift-Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
+      'Esc': function(){ boopCancelEdit(id); }  // code cells only -- the composer keeps its own default Esc behavior (nothing to "cancel" there)
     };
   var cm = CodeMirror.fromTextArea(ta, {
     mode:'python', theme: dark?'material-darker':'default',
@@ -123,6 +129,7 @@ function boopInitEditors(root){
         else if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
           e.preventDefault(); boopSplitCell(ta.getAttribute('data-cid'), ta.selectionStart);
         }
+        else if(e.key === 'Escape'){ e.preventDefault(); boopCancelEdit(ta.getAttribute('data-cid')); }
       });
     }
   });

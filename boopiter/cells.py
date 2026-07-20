@@ -1680,8 +1680,9 @@ def edit_cell(id:int) -> FT:
 # %% ../nbs/01_cells.ipynb #aa94e6b4
 @rt
 def view_cell(id:int) -> FT:
-    "Switch this cell back to its static (non-editing) view -- used by the Cancel button."
+    "Switch this cell back to its static (non-editing) view -- used by the Cancel button and the Escape hotkey (see boopCancelEdit() in edit.js). Also clears nb.selected if it's this cell -- otherwise a code cell (whose editor is shown exactly while c.id == nb.selected, not via a separate edit flag like note/prompt/raw) would just redraw right back into edit mode."
     c = nb.get(id)
+    if c and nb.selected == id: nb.selected = None
     return render_cell(c) if c else render_nb()
 
 # %% ../nbs/01_cells.ipynb #e046acb8
