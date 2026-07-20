@@ -6,18 +6,18 @@ Docs: https://drscotthawley.github.io/boopiter/cells.html.md"""
 
 # %% auto #0
 __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'read_file_content', 'run_code',
-           'pending_code_cell', 'run_code_poll', 'Cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll',
-           'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
-           'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
-           'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
-           'fname_display', 'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model',
-           'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal',
-           'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
-           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
-           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
-           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'run_code_poll', 'Cell', 'Notebook', 'pending_prompt_cell', 'run_prompt_poll', 'add_tool', 'llm_context',
+           'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header',
+           'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell', 'render_cell_edit',
+           'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook', 'fname_display',
+           'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model', 'toggle_reasoning',
+           'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu',
+           'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse',
+           'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel', 'run_all',
+           'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell',
+           'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert',
+           'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected',
+           'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re
@@ -45,7 +45,7 @@ try:                                    # normal cli run
 except NameError:                       # notebook / nbdev-test
     from nbdev.config import get_config
     static_dir = get_config().lib_path / 'static'
-
+    
 # Function to read a file and return its content as a string
 def read_file_content(file_path):
     with open(file_path, 'r') as file:
@@ -146,6 +146,15 @@ def _best_block(fmt:dict) -> dict:
             return {'type':'display', 'mime':mime, 'data':fmt[mime]}
     return {'type':'stream', 'mime':None, 'data':fmt.get('text/plain', '')}
 
+# %% ../nbs/01_cells.ipynb #237ec61a
+def _best_block(fmt:dict) -> dict:
+    "The richest available rendering of a formatted-object MIME dict, as an output block; falls back to its plain-text repr."
+    for mime in _MIME_PRIORITY:
+        if mime in fmt:
+            return {'type':'display', 'mime':mime, 'data':fmt[mime]}
+    return {'type':'stream', 'mime':None, 'data':fmt.get('text/plain', '')}
+
+# %% ../nbs/01_cells.ipynb #aab4157f
 def _flush_figures() -> list[dict]:
     "Any matplotlib figures left open after a cell runs, as image/png display blocks -- captured explicitly (savefig + close) rather than relying on an inline backend's event hooks, which proved unreliable on this headless shell."
     try:
@@ -161,6 +170,7 @@ def _flush_figures() -> list[dict]:
         plt.close(fig)
     return blocks
 
+# %% ../nbs/01_cells.ipynb #d45303a2
 def run_code(src:str) -> list[dict]:
     "Execute `src` in the shared shell; return an ordered list of output blocks (each a dict with 'type' -- stream/error/display -- and, for display blocks, a 'mime' type). See Cell.output."
     with capture_output() as io:
@@ -230,22 +240,148 @@ def _run_output_div(id:int, text:str) -> FT:
     return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
                hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
 
-def pending_code_cell(c:'Cell', text:str='') -> FT:
-    "Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done."
-    return _cell_outer(c, cell_header(c, running=True),
-                        Pre(Code(c.source, cls='language-python'), cls='text-sm overflow-x-auto'),
-                        _run_output_div(c.id, text))
-
-def _start_code_run(c:'Cell') -> FT:
-    "Kick off `c.source` running in a background thread and return a placeholder that polls for its progress; see run_code_poll()."
+@rt
+def run_code_poll(id:int) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
     global _run_state
-    if nb.selected == c.id: nb.selected = None  # revert to the static (fast) view immediately, like every other cell type
-    state = _RunState(c.id)
-    state.thread = threading.Thread(target=_run_code_bg, args=(c.source, state), daemon=True)
-    _run_state = state
-    state.thread.start()
-    return pending_code_cell(c)
+    c = nb.get(id)
+    if not c: return ''
+    st = _run_state
+    if st is None or st.cell_id != id:
+        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
+    if not st.done:
+        return _run_output_div(id, ''.join(st.buffer))
+    c.output = st.blocks
+    _run_state = None
+    return '', render_cell(c, oob=True)
 
+
+# %% ../nbs/01_cells.ipynb #fb206bb5
+class _TeeStream(_pyio.TextIOBase):
+    "A writable stream that appends every write() straight into a _RunState's buffer, so a poll request mid-execution can see output as it's produced -- unlike capture_output(), which only exposes text once its `with` block exits. Subclassing TextIOBase (rather than a bare object) gives it a real isatty()/readable()/etc. file protocol -- without it, libraries like tqdm that probe for a proper file object fall back to appending a newline per update instead of overwriting in place with '\\r'."
+    def __init__(self, state:_RunState): self.state = state
+    def writable(self) -> bool: return True
+    def write(self, s:str) -> int:
+        if s: self.state.buffer.append(s)
+        return len(s)
+
+def _run_code_bg(src:str, state:_RunState) -> None:
+    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
+    try:
+        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
+            res = _shell.orig_run(src)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    blocks = []
+    if res.error_in_exec is not None:
+        e = res.error_in_exec
+        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
+    text = _collapse_cr(''.join(state.buffer))
+    if text:
+        blocks.append({'type':'stream', 'mime':None, 'data':text})
+    blocks += [_best_block(o.data) for o in io.outputs]
+    if res.result is not None:
+        fmt, _md = _shell.display_formatter.format(res.result)
+        blocks.append(_best_block(fmt))
+    blocks += _flush_figures()
+    state.blocks = blocks
+    state.done = True
+
+def _run_output_div(id:int, text:str) -> FT:
+    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
+    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
+    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
+               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
+
+@rt
+def run_code_poll(id:int) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
+    global _run_state
+    c = nb.get(id)
+    if not c: return ''
+    st = _run_state
+    if st is None or st.cell_id != id:
+        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
+    if not st.done:
+        return _run_output_div(id, ''.join(st.buffer))
+    c.output = st.blocks
+    _run_state = None
+    return '', render_cell(c, oob=True)
+
+
+# %% ../nbs/01_cells.ipynb #d05fcd2b
+def _run_code_bg(src:str, state:_RunState) -> None:
+    "Runs in a background thread: executes `src` with stdout/stderr tee'd into `state.buffer` as it goes, then fills in `state.blocks` (same shape as run_code()'s return) once execution finishes. See run_code_poll() for the other end."
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = _TeeStream(state)  # one shared stream, so stdout/stderr interleave in real chronological order
+    try:
+        with capture_output(stdout=False, stderr=False) as io:  # display()/last-expr capture only -- stdout/stderr are already tee'd above
+            res = _shell.orig_run(src)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    blocks = []
+    if res.error_in_exec is not None:
+        e = res.error_in_exec
+        blocks.append({'type':'error', 'mime':None, 'data':f'{type(e).__name__}: {e}'})
+    text = _collapse_cr(''.join(state.buffer))
+    if text:
+        blocks.append({'type':'stream', 'mime':None, 'data':text})
+    blocks += [_best_block(o.data) for o in io.outputs]
+    if res.result is not None:
+        fmt, _md = _shell.display_formatter.format(res.result)
+        blocks.append(_best_block(fmt))
+    blocks += _flush_figures()
+    state.blocks = blocks
+    state.done = True
+
+def _run_output_div(id:int, text:str) -> FT:
+    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
+    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
+    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
+               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
+
+@rt
+def run_code_poll(id:int) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
+    global _run_state
+    c = nb.get(id)
+    if not c: return ''
+    st = _run_state
+    if st is None or st.cell_id != id:
+        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
+    if not st.done:
+        return _run_output_div(id, ''.join(st.buffer))
+    c.output = st.blocks
+    _run_state = None
+    return '', render_cell(c, oob=True)
+
+
+# %% ../nbs/01_cells.ipynb #ba7d430f
+def _run_output_div(id:int, text:str) -> FT:
+    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
+    content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
+    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
+               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
+
+@rt
+def run_code_poll(id:int) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
+    global _run_state
+    c = nb.get(id)
+    if not c: return ''
+    st = _run_state
+    if st is None or st.cell_id != id:
+        return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
+    if not st.done:
+        return _run_output_div(id, ''.join(st.buffer))
+    c.output = st.blocks
+    _run_state = None
+    return '', render_cell(c, oob=True)
+
+
+# %% ../nbs/01_cells.ipynb #981af213
 @rt
 def run_code_poll(id:int) -> FT|tuple:
     "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
@@ -482,6 +618,145 @@ def run_prompt_poll(id:int) -> FT|str:
     c2 = _finalize_prompt_reply(id, content, details)
     return render_cell(c2) if c2 else ''
 
+# %% ../nbs/01_cells.ipynb #136e4da3
+def _start_prompt_run(prompt_id:int) -> None:
+    "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make). Uses nb.active_model() (standard or reasoning, per the brain-icon toggle) and, while reasoning is active, nb.reasoning_effort."
+    global _prompt_state
+    c = nb.get(prompt_id)
+    state = _RunState(prompt_id)
+    model = nb.active_model()
+    if model:
+        tools = get_tool_list(nb.tool_selection) + nb.tools
+        _push_tools()  # keep the shell namespace in sync before the model can suggest calling any of these
+        think = nb.reasoning_effort if nb.use_reasoning else None
+        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), model, tools, think, state), daemon=True)
+        _prompt_state = state
+        state.thread.start()
+    else:
+        state.blocks = (stub_reply(nb, c.source), None)
+        state.done = True
+        _prompt_state = state
+
+def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
+    "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
+    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
+    parts = [Span('Assistant', cls='font-semibold text-sm'), Span(' Tricky...', cls='text-cyan-400 animate-pulse text-[15px] ml-1')]
+    body = [Div(*parts, cls='flex items-center gap-1')]
+    if text:
+        body.append(Pre(text, cls='text-sm whitespace-pre-wrap mt-1 opacity-80'))
+    return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
+               hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
+               hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
+
+def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
+    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
+    c = nb.get(prompt_id)
+    if not c or c.ctype != 'prompt': return None
+    i = nb.index(c.id)
+    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+    if nxt is not None and nxt.ctype == 'assistant':
+        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
+        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
+    else:
+        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
+    return nxt
+
+@rt
+def run_prompt_poll(id:int) -> FT|str:
+    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
+    global _prompt_state
+    st = _prompt_state
+    if st is None or st.cell_id != id:
+        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
+    if not st.done:
+        return pending_prompt_cell(id, ''.join(st.buffer))
+    content, details = st.blocks
+    _prompt_state = None
+    c2 = _finalize_prompt_reply(id, content, details)
+    return render_cell(c2) if c2 else ''
+
+# %% ../nbs/01_cells.ipynb #17498997
+def pending_prompt_cell(prompt_id:int, text:str='', oob_swap:str=None) -> FT:
+    "Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target."
+    kw = {'hx_swap_oob': oob_swap} if oob_swap else {}
+    parts = [Span('Assistant', cls='font-semibold text-sm'), Span(' Tricky...', cls='text-cyan-400 animate-pulse text-[15px] ml-1')]
+    body = [Div(*parts, cls='flex items-center gap-1')]
+    if text:
+        body.append(Pre(text, cls='text-sm whitespace-pre-wrap mt-1 opacity-80'))
+    return Div(*body, id=f'pending-{prompt_id}', cls='border-l-4 border-error pl-3 py-2 my-2 ml-8',
+               hx_post=run_prompt_poll.to(id=prompt_id), hx_target=f'#pending-{prompt_id}',
+               hx_swap='outerHTML', hx_trigger='load delay:300ms', **kw)
+
+def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
+    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
+    c = nb.get(prompt_id)
+    if not c or c.ctype != 'prompt': return None
+    i = nb.index(c.id)
+    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+    if nxt is not None and nxt.ctype == 'assistant':
+        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
+        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
+    else:
+        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
+    return nxt
+
+@rt
+def run_prompt_poll(id:int) -> FT|str:
+    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
+    global _prompt_state
+    st = _prompt_state
+    if st is None or st.cell_id != id:
+        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
+    if not st.done:
+        return pending_prompt_cell(id, ''.join(st.buffer))
+    content, details = st.blocks
+    _prompt_state = None
+    c2 = _finalize_prompt_reply(id, content, details)
+    return render_cell(c2) if c2 else ''
+
+# %% ../nbs/01_cells.ipynb #4aa994f4
+def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell|None:
+    "Write a completed LLM reply into the Prompt's paired Assistant cell, creating it if it doesn't already exist. Shared tail end of the old (now removed) run_prompt_cell(): the context-building half lives in _start_prompt_run(), this is the cell-writing half."
+    c = nb.get(prompt_id)
+    if not c or c.ctype != 'prompt': return None
+    i = nb.index(c.id)
+    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+    if nxt is not None and nxt.ctype == 'assistant':
+        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
+        nxt.ts = datetime.now().strftime('%I:%M:%S %p')
+    else:
+        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
+    return nxt
+
+@rt
+def run_prompt_poll(id:int) -> FT|str:
+    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
+    global _prompt_state
+    st = _prompt_state
+    if st is None or st.cell_id != id:
+        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
+    if not st.done:
+        return pending_prompt_cell(id, ''.join(st.buffer))
+    content, details = st.blocks
+    _prompt_state = None
+    c2 = _finalize_prompt_reply(id, content, details)
+    return render_cell(c2) if c2 else ''
+
+# %% ../nbs/01_cells.ipynb #623f0a3a
+@rt
+def run_prompt_poll(id:int) -> FT|str:
+    "Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done."
+    global _prompt_state
+    st = _prompt_state
+    if st is None or st.cell_id != id:
+        return ''  # stale poll (e.g. a second tab, or the reply was already finalized) -- nothing to do
+    if not st.done:
+        return pending_prompt_cell(id, ''.join(st.buffer))
+    content, details = st.blocks
+    _prompt_state = None
+    c2 = _finalize_prompt_reply(id, content, details)
+    return render_cell(c2) if c2 else ''
+
 # %% ../nbs/01_cells.ipynb #47866bbf
 def add_tool(fn:callable) -> callable:
     "Register `fn` as a tool the LLM can call on future Prompt-cell runs. Also usable as a decorator: `@add_tool`."
@@ -590,6 +865,11 @@ def _svg_icon(paths, cls:str='size-4', filled:bool=False) -> FT:
                   xmlns='http://www.w3.org/2000/svg', fill='currentColor' if filled else 'none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
 
+def Icon(name:str, cls:str='size-4', filled:bool=False) -> FT:
+    "A heroicons SVG by name (see ICONS), inlined so `stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too) matches the button's text color. Thin wrapper over _svg_icon()."
+    return _svg_icon(ICONS[name], cls, filled)
+
+# %% ../nbs/01_cells.ipynb #c82fd27d
 def Icon(name:str, cls:str='size-4', filled:bool=False) -> FT:
     "A heroicons SVG by name (see ICONS), inlined so `stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too) matches the button's text color. Thin wrapper over _svg_icon()."
     return _svg_icon(ICONS[name], cls, filled)
@@ -1013,6 +1293,198 @@ def brain_menu(icon_cls:str) -> FT:
         id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
 
 
+# %% ../nbs/01_cells.ipynb #745c1ce6
+def _model_label(m:dict) -> str:
+    "A model's dropdown label: its bare name, plus a trailing run of capability emojis (see _CAPABILITY_EMOJI) if it has any worth flagging."
+    emoji = ''.join(_CAPABILITY_EMOJI[c] for c in m.get('capabilities', []) if c in _CAPABILITY_EMOJI)
+    return f"{m['model']}  {emoji}" if emoji else m['model']
+
+def _model_select(models:list[dict], active_id:str|None, route) -> FT:
+    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
+    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
+    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
+                      hx_post=route, hx_trigger='change', hx_swap='none')
+
+def _dropdown_width_px(models:list[dict]) -> int:
+    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
+    longest = max((len(_model_label(m)) for m in models), default=20)
+    return max(220, min(380, 45 + longest * 8))
+
+_EFFORT_LEVELS = ('l', 'm', 'h')
+
+def brain_menu(icon_cls:str) -> FT:
+    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
+    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
+    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
+    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
+    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            Div('Standard model', cls='text-sm'),
+            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
+            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
+            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
+    if reasoning_models:
+        rows.append(Div(
+            Span('Effort', cls='text-xs font-semibold mr-2'),
+            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
+                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
+                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
+              for lvl in _EFFORT_LEVELS],
+            cls='flex items-center mt-2'))
+    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
+    width_px = _dropdown_width_px(nb.models)
+    return Div(
+        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
+                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
+        # width is estimated from the longest model label (see _dropdown_width_px) rather than
+        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
+        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
+        # _tw_header()) built by scanning literal class strings in the source, so a class built from
+        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
+        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
+        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
+        # same reason.
+        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
+           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
+
+
+# %% ../nbs/01_cells.ipynb #80b17b22
+def _model_select(models:list[dict], active_id:str|None, route) -> FT:
+    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
+    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
+    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
+                      hx_post=route, hx_trigger='change', hx_swap='none')
+
+def _dropdown_width_px(models:list[dict]) -> int:
+    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
+    longest = max((len(_model_label(m)) for m in models), default=20)
+    return max(220, min(380, 45 + longest * 8))
+
+_EFFORT_LEVELS = ('l', 'm', 'h')
+
+def brain_menu(icon_cls:str) -> FT:
+    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
+    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
+    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
+    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
+    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            Div('Standard model', cls='text-sm'),
+            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
+            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
+            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
+    if reasoning_models:
+        rows.append(Div(
+            Span('Effort', cls='text-xs font-semibold mr-2'),
+            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
+                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
+                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
+              for lvl in _EFFORT_LEVELS],
+            cls='flex items-center mt-2'))
+    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
+    width_px = _dropdown_width_px(nb.models)
+    return Div(
+        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
+                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
+        # width is estimated from the longest model label (see _dropdown_width_px) rather than
+        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
+        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
+        # _tw_header()) built by scanning literal class strings in the source, so a class built from
+        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
+        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
+        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
+        # same reason.
+        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
+           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
+
+
+# %% ../nbs/01_cells.ipynb #9e3ec772
+def _dropdown_width_px(models:list[dict]) -> int:
+    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
+    longest = max((len(_model_label(m)) for m in models), default=20)
+    return max(220, min(380, 45 + longest * 8))
+
+_EFFORT_LEVELS = ('l', 'm', 'h')
+
+def brain_menu(icon_cls:str) -> FT:
+    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
+    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
+    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
+    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
+    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            Div('Standard model', cls='text-sm'),
+            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
+            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
+            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
+    if reasoning_models:
+        rows.append(Div(
+            Span('Effort', cls='text-xs font-semibold mr-2'),
+            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
+                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
+                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
+              for lvl in _EFFORT_LEVELS],
+            cls='flex items-center mt-2'))
+    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
+    width_px = _dropdown_width_px(nb.models)
+    return Div(
+        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
+                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
+        # width is estimated from the longest model label (see _dropdown_width_px) rather than
+        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
+        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
+        # _tw_header()) built by scanning literal class strings in the source, so a class built from
+        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
+        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
+        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
+        # same reason.
+        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
+           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
+
+
+# %% ../nbs/01_cells.ipynb #fada779f
+_EFFORT_LEVELS = ('l', 'm', 'h')
+
+def brain_menu(icon_cls:str) -> FT:
+    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
+    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
+    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
+    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
+    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            Div('Standard model', cls='text-sm'),
+            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
+            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
+            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
+    if reasoning_models:
+        rows.append(Div(
+            Span('Effort', cls='text-xs font-semibold mr-2'),
+            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
+                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
+                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
+              for lvl in _EFFORT_LEVELS],
+            cls='flex items-center mt-2'))
+    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
+    width_px = _dropdown_width_px(nb.models)
+    return Div(
+        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
+                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
+        # width is estimated from the longest model label (see _dropdown_width_px) rather than
+        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
+        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
+        # _tw_header()) built by scanning literal class strings in the source, so a class built from
+        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
+        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
+        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
+        # same reason.
+        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
+           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
+
+
 # %% ../nbs/01_cells.ipynb #7f7b8257
 def _apply_active_model(prev_active:str|None) -> None:
     "After changing standard_model/reasoning_model/use_reasoning, stop whichever Ollama model was previously active (see nb.active_model()) if the switch actually changed it -- frees its VRAM, same as the old single-model set_model() used to do."
@@ -1053,6 +1525,85 @@ def set_reasoning_effort(effort:str) -> str:
     nb.reasoning_effort = effort
     return ''
 
+# %% ../nbs/01_cells.ipynb #bc2d594c
+@rt
+def set_standard_model(model:str) -> str:
+    "Change the Standard-model pick in the brain menu. Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
+    if any(m['id'] == model for m in nb.models) and model != nb.standard_model:
+        prev_active = nb.active_model()
+        nb.standard_model = model
+        _apply_active_model(prev_active)
+    return ''
+
+@rt
+def set_reasoning_model(model:str) -> str:
+    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
+    if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
+        prev_active = nb.active_model()
+        nb.reasoning_model = model
+        _apply_active_model(prev_active)
+    return ''
+
+@rt
+def toggle_reasoning() -> FT:
+    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
+    prev_active = nb.active_model()
+    nb.use_reasoning = not nb.use_reasoning
+    _apply_active_model(prev_active)
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+@rt
+def set_reasoning_effort(effort:str) -> str:
+    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
+    nb.reasoning_effort = effort
+    return ''
+
+# %% ../nbs/01_cells.ipynb #ee97c857
+@rt
+def set_reasoning_model(model:str) -> str:
+    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
+    if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
+        prev_active = nb.active_model()
+        nb.reasoning_model = model
+        _apply_active_model(prev_active)
+    return ''
+
+@rt
+def toggle_reasoning() -> FT:
+    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
+    prev_active = nb.active_model()
+    nb.use_reasoning = not nb.use_reasoning
+    _apply_active_model(prev_active)
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+@rt
+def set_reasoning_effort(effort:str) -> str:
+    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
+    nb.reasoning_effort = effort
+    return ''
+
+# %% ../nbs/01_cells.ipynb #4c41b4b9
+@rt
+def toggle_reasoning() -> FT:
+    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
+    prev_active = nb.active_model()
+    nb.use_reasoning = not nb.use_reasoning
+    _apply_active_model(prev_active)
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+@rt
+def set_reasoning_effort(effort:str) -> str:
+    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
+    nb.reasoning_effort = effort
+    return ''
+
+# %% ../nbs/01_cells.ipynb #f11fc0a7
+@rt
+def set_reasoning_effort(effort:str) -> str:
+    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
+    nb.reasoning_effort = effort
+    return ''
+
 # %% ../nbs/01_cells.ipynb #9977fc97
 def _file_menu_items() -> list:
     "The New/Open/Save/Download/Restart Server actions shared by file_menu() (the hamburger dropdown) and context_menu() (the right-click popup) -- one source of truth so the two stay identical."
@@ -1073,6 +1624,27 @@ def file_menu() -> FT:
         Ul(*_file_menu_items(), tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
         cls='dropdown dropdown-bottom')
 
+def context_menu() -> FT:
+    "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
+    return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
+              cls='menu bg-base-200 rounded-box z-50 w-40 p-1 shadow fixed hidden')
+
+
+# %% ../nbs/01_cells.ipynb #468eedaf
+def file_menu() -> FT:
+    "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
+    return Div(
+        Div(Icon('bars-3'), tabindex='0', role='button', cls='btn btn-ghost btn-circle btn-sm'),
+        Ul(*_file_menu_items(), tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
+        cls='dropdown dropdown-bottom')
+
+def context_menu() -> FT:
+    "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
+    return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
+              cls='menu bg-base-200 rounded-box z-50 w-40 p-1 shadow fixed hidden')
+
+
+# %% ../nbs/01_cells.ipynb #824a254f
 def context_menu() -> FT:
     "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
     return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
@@ -1175,6 +1747,51 @@ def plugin_panel_poll(name:str) -> FT:
     "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
     return _plugin_panel(name)
 
+def _plugin_button(pl:Plugin) -> FT:
+    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
+    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
+                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
+    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
+                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
+               cls='dropdown dropdown-hover dropdown-bottom')
+
+# %% ../nbs/01_cells.ipynb #d6d0e737
+def _plugin_panel(name:str) -> FT:
+    "Self-polling wrapper around the named plugin's render(): re-fetches itself (outerHTML, carrying its own hx-trigger along so polling continues) roughly every 2s, but the JS trigger filter only actually issues that request while the mouse is over the plugin's dropdown -- so the panel is inert (no requests) until hovered, and stops again the moment you mouse away. Mirrors the _run_output_div/run_code_poll self-polling idiom already used for streaming code/prompt cells. Keyed by name (not list index) -- fastcore's qp() treats 0 as falsy (0 in (False,None) is True in Python) and silently drops an idx=0 query param, so an int index is a trap for the first-registered plugin."
+    pl = next(p for p in PLUGINS if p.name == name)
+    dom_id = f'plugin-panel-{_plugin_slug(name)}'
+    return Div(pl.render(), id=dom_id,
+               hx_get=plugin_panel_poll.to(name=name), hx_target=f'#{dom_id}', hx_swap='outerHTML',
+               hx_trigger="every 2s [this.closest('.dropdown').matches(':hover')]")
+
+@rt
+def plugin_panel_poll(name:str) -> FT:
+    "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
+    return _plugin_panel(name)
+
+def _plugin_button(pl:Plugin) -> FT:
+    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
+    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
+                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
+    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
+                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
+               cls='dropdown dropdown-hover dropdown-bottom')
+
+# %% ../nbs/01_cells.ipynb #a2d2ed8b
+@rt
+def plugin_panel_poll(name:str) -> FT:
+    "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
+    return _plugin_panel(name)
+
+def _plugin_button(pl:Plugin) -> FT:
+    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
+    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
+                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
+    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
+                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
+               cls='dropdown dropdown-hover dropdown-bottom')
+
+# %% ../nbs/01_cells.ipynb #9b6044a8
 def _plugin_button(pl:Plugin) -> FT:
     "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
     icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
