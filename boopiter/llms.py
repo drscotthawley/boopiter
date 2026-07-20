@@ -11,6 +11,7 @@ __all__ = ['DEFAULT_TOOL_SELECTION', 'get_tool_list', 'get_ollama_list', 'get_mo
 # %% ../nbs/01_llms.ipynb #5ea1e09b
 import inspect, re, time
 from fastcore.utils import *
+from fasthtml.common import Details, Summary, Ul, Li, Pre, to_xml
 from lisette import *
 
 # %% ../nbs/01_llms.ipynb #09d53f7e
@@ -82,17 +83,23 @@ def _call(self:Chat, msg:str|None=None, prefill:str|None=None, temp:float|None=N
     try: yield from _orig_chat_call(self, msg, prefill, temp, think, search, stream, max_steps, step, final_prompt, tool_choice, max_tokens, **kwargs)
     finally: self.tool_schemas = _orig_tools
 
+# %% ../nbs/01_llms.ipynb #detailsblk1
+def _details_block(rows:list[tuple[str,str]], reasoning:str|None=None) -> str:
+    "Build the collapsible <details> block of LLM call metadata (e.g. model/finish reason/tokens/tool calls) shown above a reply -- shared by the real-API path (_reply_details_html, below) and the dead_drop path (_deaddrop_stream_reply), so there's one escaped-HTML builder instead of two hand-written copies. Built from FT components (not an f-string), so every interpolated value -- including a dead_drop responder's self-reported model name, which is model-generated text, not app-controlled -- is HTML-escaped automatically rather than spliced in raw. Not part of the reply's actual content, kept out of Cell.source (see Cell.details) so it's never sent back to the model as context, and shown collapsed, in gray, above the real text. onclick=stopPropagation keeps a click on <summary> from also bubbling into the cell's click-anywhere-to-edit handler."
+    items = [Li(f'{k}: {v}') for k, v in rows]
+    kids = [Summary('Reply details'), Ul(*items)]
+    if reasoning:
+        kids.append(Pre(reasoning, style='white-space:pre-wrap'))
+    return to_xml(Details(*kids, cls='text-gray-400', onclick='event.stopPropagation()'), indent=False)
+
 # %% ../nbs/01_llms.ipynb #834cf2bc
 def _reply_details_html(response, msg) -> str:
-    "A collapsible <details> block summarizing an LLM call's metadata (model, finish reason, token counts, tool calls, reasoning) -- not part of the reply's actual content, kept out of Cell.source (see Cell.details) so it's never sent back to the model as context, and shown collapsed, in gray, above the real text. onclick=stopPropagation keeps a click on <summary> from also bubbling into the cell's click-anywhere-to-edit handler."
+    "The <details> block (see _details_block) for a real API call's response: model, finish reason, token counts, tool calls, and reasoning content, if any."
     u = response.usage
     rows = [('Model', response.model), ('Finish reason', response.choices[0].finish_reason)]
     if u: rows.append(('Tokens', f'{u.prompt_tokens} prompt + {u.completion_tokens} completion = {u.total_tokens} total'))
     if msg.tool_calls: rows.append(('Tool calls', ', '.join(tc.function.name for tc in msg.tool_calls)))
-    items = ''.join(f'<li>{k}: {v}</li>' for k, v in rows)
-    reasoning = f'<pre style="white-space:pre-wrap">{msg.reasoning_content}</pre>' if getattr(msg, 'reasoning_content', None) else ''
-    return (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
-            f'<ul>{items}</ul>{reasoning}</details>')
+    return _details_block(rows, reasoning=getattr(msg, 'reasoning_content', None))
 
 # %% ../nbs/01_llms.ipynb #d11e64d4
 def _tool_doc_line(fn) -> str:
@@ -137,7 +144,7 @@ _DEADDROP_MODEL_INSTRUCTION = (
 _DEADDROP_MODEL_RE = re.compile(r'\n?---MODEL:\s*(.+?)\s*---\s*$')
 
 def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
-    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` (plus `_DEADDROP_MODEL_INSTRUCTION`, asking the responder to self-identify) as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); the '---MODEL: ...---' line just before it (see _DEADDROP_MODEL_RE) is parsed out and used in details_html instead of the generic 'deaddrop/claude' -- everything else before it becomes the final reply. Falls back to `model` if the responder didn't include the line (e.g. an older/manual reply)."
+    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` (plus `_DEADDROP_MODEL_INSTRUCTION`, asking the responder to self-identify) as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); the '---MODEL: ...---' line just before it (see _DEADDROP_MODEL_RE) is parsed out and used in details_html instead of the generic 'deaddrop/claude' -- everything else before it becomes the final reply. Falls back to `model` if the responder didn't include the line (e.g. an older/manual reply). The model name is untrusted, model-generated text (a human is literally relaying whatever the other side typed) -- _details_block HTML-escapes it, same as the real-API path."
     path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context + _DEADDROP_MODEL_INSTRUCTION)
     resp_path = _DEADDROP_DIR / 'responses' / Path(path).name
     seen = 0
@@ -151,8 +158,7 @@ def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
                 responder_model = (m.group(1) if m else model) + ' (dead drop)'
                 if m: content = content[:m.start()].rstrip()
                 if len(content) > seen: yield ('delta', content[seen:])
-                details_html = (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
-                                 f'<ul><li>Model: {responder_model}</li></ul></details>')
+                details_html = _details_block([('Model', responder_model)])
                 yield ('final', content, details_html)
                 return
             if len(text) > seen:
