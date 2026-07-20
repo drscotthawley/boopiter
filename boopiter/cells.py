@@ -113,17 +113,25 @@ _run_state:'_RunState|None' = None  # the one code cell currently executing in t
 _run_all_queue:list[int] = []  # remaining code-cell ids for an in-flight Run All (drained by run_code_poll as each cell finishes)
 _run_all_current:'int|None' = None  # the cell id Run All is currently on; only its completion advances the queue, so a solo run's completion can never hijack a lingering batch
 
+# %% ../nbs/06_cells.ipynb #pollsched01
+_POLL_SCHEDULE = (0, 40, 80, 150, 300)  # ms delay before each successive still-running poll; holds at the last value thereafter. Most cells finish before the first (zero-delay) poll even fires -- by the time an HTTP response reaches the browser and htmx reissues a request, a trivial cell's background thread has typically already completed. Only genuinely slow cells fall back to something close to the original fixed 300ms cadence, so a long-running cell never gets hammered.
+
+def _poll_trigger(poll_n:int) -> str:
+    "htmx hx-trigger value for the `poll_n`-th poll of a streaming placeholder -- see _POLL_SCHEDULE."
+    delay = _POLL_SCHEDULE[min(poll_n, len(_POLL_SCHEDULE) - 1)]
+    return 'load' if delay == 0 else f'load delay:{delay}ms'
+
 # %% ../nbs/06_cells.ipynb #ba7d430f
-def _run_output_div(id:int, text:str) -> FT:
-    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker every 300ms."
+def _run_output_div(id:int, text:str, poll_n:int=0) -> FT:
+    "The small, self-polling output area shown under a code cell while its execution is still running. Only this div re-swaps on each poll tick (not the whole cell -- see pending_code_cell()), so the static code block above it doesn't flicker. `poll_n` (0 for the very first poll, right after the cell started) escalates the delay before each successive re-poll -- see _POLL_SCHEDULE -- so a cell that's already finished by the time this placeholder reaches the browser resolves on the very next round trip instead of waiting out a fixed delay."
     content = [Pre(_collapse_cr(text), cls='ansi-out text-sm mt-1 whitespace-pre overflow-x-auto opacity-70')] if text else []
-    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id),
-               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger='load delay:300ms')
+    return Div(*content, id=f'run-out-{id}', hx_post=run_code_poll.to(id=id, poll_n=poll_n+1),
+               hx_target=f'#run-out-{id}', hx_swap='outerHTML', hx_trigger=_poll_trigger(poll_n))
 
 # %% ../nbs/06_cells.ipynb #981af213
 @rt
-def run_code_poll(id:int) -> FT|tuple:
-    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
+def run_code_poll(id:int, poll_n:int=0) -> FT|tuple:
+    "Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself, with an escalating delay -- see _POLL_SCHEDULE) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty."
     global _run_state, _run_all_queue, _run_all_current
     c = nb.get(id)
     if not c: return ''
@@ -131,7 +139,7 @@ def run_code_poll(id:int) -> FT|tuple:
     if st is None or st.cell_id != id:
         return '', render_cell(c, oob=True)  # stale poll (e.g. a second tab, or after an interrupt already finalized it) -- just resync
     if not st.done:
-        return _run_output_div(id, ''.join(st.buffer))
+        return _run_output_div(id, ''.join(st.buffer), poll_n=poll_n)
     c.output = st.blocks
     _run_state = None
     if id == _run_all_current:  # only the cell Run All is currently on advances the batch -- a solo play/Shift-Enter completion never does, even if a stale queue somehow lingers
@@ -145,7 +153,6 @@ def run_code_poll(id:int) -> FT|tuple:
                     _run_all_current = nxt.id
                     return '', render_cell(c, oob=True), _oob(f'outerHTML:#cell-{nxt.id}', run_code_cell(nxt, scroll=True))
     return '', render_cell(c, oob=True)
-
 
 # %% ../nbs/06_cells.ipynb #ef49cd37
 def pending_code_cell(c:'Cell', text:str='', scroll:bool=False) -> FT:
