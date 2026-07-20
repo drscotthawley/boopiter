@@ -10,7 +10,8 @@ project:
 
 format:
   html:
-    theme: cosmo
+    theme: [cosmo, booptheme.scss]
+    highlight-style: dracula
     css: styles.css
     toc: true
     keep-md: true
@@ -21,7 +22,7 @@ website:
   open-graph: true
   repo-actions: [issue]
   navbar:
-    background: primary
+    background: dark
     search: true
   sidebar:
     style: floating

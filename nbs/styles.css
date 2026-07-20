@@ -28,6 +28,15 @@
   margin-top: 0;
 }
 
+/* Plain code output (print()/stdout, stderr, text reprs) has no syntax-highlight
+   spans, so it inherits the default near-black text -- invisible on the dark
+   base-100 page. Force a light grey. Excludes .sourceCode so dracula-highlighted
+   output keeps its token colors. */
+.cell-output-stdout > pre, .cell-output-stderr > pre,
+.cell-output-display pre:not(.sourceCode) {
+  color: #c7ccd1;
+}
+
 div.description {
   padding-left: 2px;
   padding-top: 5px;
