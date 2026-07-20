@@ -946,9 +946,9 @@ def _model_select(models:list[dict], active_id:str|None, route) -> FT:
                       hx_post=route, hx_trigger='change', hx_swap='none')
 
 def _dropdown_width_px(models:list[dict]) -> int:
-    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes whenever a name+emoji combo ran longer than expected. ~9px/char is a rough per-character width at this font size; the +60 covers the select's own padding/border/dropdown-arrow chrome. Clamped to a sane range either way."
+    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
     longest = max((len(_model_label(m)) for m in models), default=20)
-    return max(260, min(480, 60 + longest * 9))
+    return max(220, min(380, 45 + longest * 8))
 
 _EFFORT_LEVELS = ('l', 'm', 'h')
 
@@ -976,13 +976,16 @@ def brain_menu(icon_cls:str) -> FT:
         fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
                   hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
         # width is estimated from the longest model label (see _dropdown_width_px) rather than
-        # fixed, so a long name+emoji combo doesn't overflow its select box. DaisyUI's dropdown
-        # only offers left- or right-anchored positioning (dropdown-end), neither of which centers
-        # on the trigger -- `left:50%; transform:translateX(-50%)` is the standard CSS centering
-        # trick, overriding daisyUI's own left/right via higher-specificity inline style.
+        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
+        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
+        # _tw_header()) built by scanning literal class strings in the source, so a class built from
+        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
+        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
+        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
+        # same reason.
         Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
-           style='left:50%; transform:translateX(-50%);',
-           cls=f'dropdown-content menu bg-base-200 rounded-box z-10 w-[{width_px}px] p-1 shadow'),
+           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
         id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
 
 
