@@ -1,0 +1,13 @@
+/*-- scss:defaults --*/
+// Port the boopiter notebook UI's dark palette (DaisyUI v5 "dark") onto the docs site.
+// Values are the DaisyUI dark tokens converted from oklch() to hex (Sass color math can't
+// operate on oklch()). See boopiter/cells.py: the app runs data-theme="dark", the body is
+// base-100, the navbar is `bg-base-200`, text is base-content, and primary is the accent.
+$body-bg:    #1d232a;  // base-100        -- page background
+$body-color: #ecf9ff;  // base-content    -- foreground text
+$primary:    #605dff;  // primary         -- links / active accents (kept as the accent)
+$dark:       #191e24;  // base-200        -- navbar + the few chrome bits that echo it
+$code-color: #bd93f9;  // dracula purple  -- inline `backtick` code; the default is a dark
+                       //                    purple that reads too dim on the dark page
+
+/*-- scss:rules --*/
