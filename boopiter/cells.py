@@ -90,6 +90,12 @@ daisy_hdrs = [
     # flush against the viewport's right edge where a centered tooltip would get clipped.
     Style('.tooltip[data-tip]:before{font-size:.88rem}'
           '.tooltip-right-align[data-tip]:before{left:auto;right:0;transform:translateY(var(--tt-pos,-.25rem))}'),
+    # .icon-fillable always renders fill='none' as a plain SVG attribute; .icon-filled overrides it
+    # via CSS (which wins over a presentation attribute), so JS can flip an icon between outline and
+    # solid instantly (classList.toggle) with zero network round-trip -- see boopToggleExport() in
+    # edit.js, used for the export-flag bookmark icon so clicking it doesn't need a whole-cell
+    # outerHTML swap (and the flicker that came with one) just to change one icon's fill.
+    Style('.icon-fillable{fill:none}.icon-fillable.icon-filled{fill:currentColor}'),
     Script("import { AnsiUp } from 'https://cdn.jsdelivr.net/npm/ansi_up@6/ansi_up.js';"
            " window.AnsiUp = AnsiUp; if(window.boopRenderAnsi) boopRenderAnsi();", type='module'),
     Script(_THEME_JS),
@@ -574,19 +580,19 @@ ICONS = {
 
 
 # %% ../nbs/01_cells.ipynb #df3d9ee3
-def _svg_icon(paths, cls:str='size-4') -> FT:
-    "Render a tuple of ICONS-style path data (plain 'd' strings and/or (d, scale) pairs) as an inlined outline SVG with stroke='currentColor'. An (d, scale) pair renders that sub-path in its own group, scaled about the 24x24 viewBox center, so it can be enlarged independently of the rest (e.g. x-circle's X). Shared by Icon() (built-in ICONS) and plugin icons (see plugins.py / _plugin_button), so a plugin's SVG renders identically to a built-in one."
+def _svg_icon(paths, cls:str='size-4', filled:bool=False) -> FT:
+    "Render a tuple of ICONS-style path data (plain 'd' strings and/or (d, scale) pairs) as an inlined SVG with stroke='currentColor' -- outline style (fill='none') by default, or a solid fill='currentColor' silhouette if `filled` -- so both stroke and any fill track the button's text color via `cls`. An (d, scale) pair renders that sub-path in its own group, scaled about the 24x24 viewBox center, so it can be enlarged independently of the rest (e.g. x-circle's X). Shared by Icon() (built-in ICONS) and plugin icons (see plugins.py / _plugin_button), so a plugin's SVG renders identically to a built-in one."
     def render(item):
         d, scale = item if isinstance(item, tuple) else (item, 1)
         p = SvgPath(stroke_linecap='round', stroke_linejoin='round', d=d)
         return SvgG(p, transform=f'translate(12,12) scale({scale}) translate(-12,-12)') if scale != 1 else p
     return fh.Svg(*[render(item) for item in paths],
-                  xmlns='http://www.w3.org/2000/svg', fill='none', viewbox='0 0 24 24',
+                  xmlns='http://www.w3.org/2000/svg', fill='currentColor' if filled else 'none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
 
-def Icon(name:str, cls:str='size-4') -> FT:
-    "A heroicons outline SVG by name (see ICONS), inlined so `stroke='currentColor'` matches the button's text color. Thin wrapper over _svg_icon()."
-    return _svg_icon(ICONS[name], cls)
+def Icon(name:str, cls:str='size-4', filled:bool=False) -> FT:
+    "A heroicons SVG by name (see ICONS), inlined so `stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too) matches the button's text color. Thin wrapper over _svg_icon()."
+    return _svg_icon(ICONS[name], cls, filled)
 
 # %% ../nbs/01_cells.ipynb #d37bf5b4
 def IconBtn(name:str, title:str, **kw) -> FT:
@@ -617,12 +623,30 @@ def cell_toolbar(c:Cell) -> FT:
                          onclick=f"boopCopy({c.id}, '{c.ctype}')")
     btns = [copy_btn]
     if c.ctype == 'code':
-        btns.append(fh.Button(Icon('bookmark'), data_tip='Exported (#| export)' if c.export else 'Not exported',
-                              type='button', hx_post=toggle_export.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML',
-                              cls='btn btn-sm btn-ghost tooltip tooltip-bottom' + (' text-error' if c.export else '')))
-    btns.append(IconBtn('eye' if c.visible else 'eye-slash',
-                    'Hide from LLM' if c.visible else 'Show to LLM',
-                    hx_post=toggle_vis.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
+        btns.append(fh.Button(Icon('bookmark', cls='size-4 icon-fillable' + (' icon-filled' if c.export else '')),
+                              id=f'export-btn-{c.id}', data_tip='Exported (#| export)' if c.export else 'Not exported',
+                              type='button', onclick=f'boopToggleExport({c.id})',
+                              # green (text-success, same as note cells' border-success), not red -- red reads as
+                              # "something's wrong" when export=True is actually the intended, working state. A solid
+                              # fill (not just the outline) on top of that, since a green outline alone read as less
+                              # noticeable than the red outline it replaced -- solid fill draws the eye more reliably.
+                              # onclick (not hx_post/hx_target='outerHTML') -- boopToggleExport() flips the CSS class
+                              # instantly and persists in the background (see edit.js), instead of swapping the whole
+                              # cell just to change one icon's fill/color, which was visibly flickering the page.
+                              cls='btn btn-sm btn-ghost tooltip tooltip-bottom' + (' text-success' if c.export else '')))
+    # Both eye/eye-slash icons render always, one 'hidden' -- a CSS class can't morph one icon's
+    # path data into another's the way it can flip a fill color, so we ship both and toggle which
+    # is shown. Same instant-CSS/no-outerHTML-swap idea as the export bookmark above -- see
+    # boopToggleVis() in edit.js, which also toggles #cell-{id}'s own dimming (opacity-70) directly.
+    btns.append(fh.Button(
+        Icon('eye', cls='size-4 vis-eye' + ('' if c.visible else ' hidden')),
+        Icon('eye-slash', cls='size-4 vis-eye-slash' + (' hidden' if c.visible else '')),
+        id=f'vis-btn-{c.id}', data_tip='Hide from LLM' if c.visible else 'Show to LLM',
+        type='button', onclick=f'boopToggleVis({c.id})',
+        # red (text-error) while hidden -- unlike the export bookmark, red is the right call here:
+        # a hidden cell IS being excluded/withheld from the LLM, which is exactly what red usually
+        # signals, not a false alarm the way it was for the (working-as-intended) export flag.
+        cls='btn btn-sm btn-ghost tooltip tooltip-bottom' + ('' if c.visible else ' text-error')))
     if c.ctype == 'code':
         # hx_post (not onclick=boopSave) so Run works whether or not the cell is currently being
         # edited -- boopSave() requires a live CodeMirror/textarea, which a static (non-selected)
@@ -696,7 +720,7 @@ def cell_body(c:Cell) -> FT:
 # %% ../nbs/01_cells.ipynb #8fc13eb4
 def _cell_outer(c:Cell, *content, oob=None, **extra) -> FT:
     "The bordered wrapper div common to every cell, regardless of type or edit state. `oob`, if given, marks this div for an htmx out-of-band swap: True for a plain id-matched replace, or an 'hx-swap-oob' spec string (e.g. 'afterend:#cell-5') for a positional insert/replace elsewhere in the DOM. `extra` kwargs (e.g. hx_post/hx_trigger) are forwarded straight to the Div -- see pending_code_cell()."
-    dim    = '' if c.visible else 'opacity-40'
+    dim    = '' if c.visible else 'opacity-70'  # split the difference between fully dim and fully visible -- 40 made it too hard to read/edit a hidden cell's content
     indent = 'ml-8' if c.ctype == 'assistant' else ''
     ring   = 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 rounded' if c.id == nb.selected else ''
     kw = {'hx_swap_oob': 'true' if oob is True else oob} if oob else {}
@@ -1460,22 +1484,21 @@ def run_cell(id:int) -> FT:
 
 # %% ../nbs/01_cells.ipynb #0310656d
 @rt
-def toggle_vis(id:int) -> FT|str:
-    "Toggle whether this cell is visible to the LLM (shown/hidden in llm_context)."
+def toggle_vis(id:int) -> str:
+    "Toggle whether this cell is visible to the LLM (shown/hidden in llm_context). Called via a plain fetch(), not htmx -- boopToggleVis() (edit.js) already updated the eye icon and cell dimming instantly and optimistically on the client; this just persists that same flip server-side, no HTML response needed."
     c = nb.get(id)
-    if not c: return ''
-    c.visible = not c.visible
-    return render_cell(c)
+    if c: c.visible = not c.visible
+    return ''
 
 
 # %% ../nbs/01_cells.ipynb #a385d3e9
 @rt
-def toggle_export(id:int) -> FT:
-    "Toggle a code cell's '#| export' flag (the bookmark icon in cell_toolbar)."
+def toggle_export(id:int) -> str:
+    "Toggle a code cell's '#| export' flag (the bookmark icon in cell_toolbar). Called via a plain fetch(), not htmx -- boopToggleExport() (edit.js) already updated the icon's look instantly and optimistically on the client; this just persists that same flip server-side, no HTML response needed."
     c = nb.get(id)
     if c and c.ctype == 'code':
         c.export = not c.export
-    return render_cell(c) if c else render_nb()
+    return ''
 
 # %% ../nbs/01_cells.ipynb #5b0aa468
 @rt

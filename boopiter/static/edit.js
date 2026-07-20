@@ -1,4 +1,35 @@
 
+function boopToggleVis(id){
+  // Flip the eye/eye-slash icon and the cell's own dimming instantly (CSS class toggles, no DOM
+  // swap) and persist in the background -- same idea as boopToggleExport() below. Both icons are
+  // always in the DOM (see cell_toolbar()); only 'hidden' moves between them, since unlike a fill
+  // color, a CSS class can't morph one icon's path data into another's.
+  var btn = document.getElementById('vis-btn-'+id);
+  var cellDiv = document.getElementById('cell-'+id);
+  if(!btn || !cellDiv) return;
+  var eye = btn.querySelector('.vis-eye'), eyeSlash = btn.querySelector('.vis-eye-slash');
+  var willBeVisible = cellDiv.classList.contains('opacity-70');  // currently dimmed -> about to become visible
+  eye.classList.toggle('hidden', !willBeVisible);
+  eyeSlash.classList.toggle('hidden', willBeVisible);
+  cellDiv.classList.toggle('opacity-70', !willBeVisible);
+  btn.classList.toggle('text-error', !willBeVisible);
+  btn.setAttribute('data-tip', willBeVisible ? 'Hide from LLM' : 'Show to LLM');
+  fetch('/toggle_vis?id='+id, {method:'POST'}).catch(function(){});
+}
+function boopToggleExport(id){
+  // Flip the bookmark icon's look instantly (pure CSS class toggle, no DOM swap -- see the
+  // .icon-fillable/.icon-filled rule in daisy_hdrs) and persist the flag in the background.
+  // Replaces an old outerHTML swap of the whole cell just for a one-icon color change, which
+  // was visibly flickering the page for something that should be instant.
+  var btn = document.getElementById('export-btn-'+id);
+  if(!btn) return;
+  var svg = btn.querySelector('svg');
+  var nowOn = !btn.classList.contains('text-success');
+  btn.classList.toggle('text-success', nowOn);
+  if(svg) svg.classList.toggle('icon-filled', nowOn);
+  btn.setAttribute('data-tip', nowOn ? 'Exported (#| export)' : 'Not exported');
+  fetch('/toggle_export?id='+id, {method:'POST'}).catch(function(){});
+}
 function boopCancelEdit(id){
   // Same request the Cancel button makes -- exits whichever editing mode this cell is in
   // (CodeMirror or the plain textarea) back to its static view, discarding unsaved edits.
