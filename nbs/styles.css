@@ -30,10 +30,11 @@
 
 /* Plain code output (print()/stdout, stderr, text reprs) has no syntax-highlight
    spans, so it inherits the default near-black text -- invisible on the dark
-   base-100 page. Force a light grey. Excludes .sourceCode so dracula-highlighted
-   output keeps its token colors. */
-.cell-output-stdout > pre, .cell-output-stderr > pre,
-.cell-output-display pre:not(.sourceCode) {
+   base-100 page. In DARK mode only, force a light grey; light mode keeps the
+   normal dark-on-white text. Quarto puts .quarto-dark on <body> for the dark
+   theme. Excludes .sourceCode so dracula-highlighted output keeps its tokens. */
+.quarto-dark .cell-output-stdout > pre, .quarto-dark .cell-output-stderr > pre,
+.quarto-dark .cell-output-display pre:not(.sourceCode) {
   color: #c7ccd1;
 }
 
