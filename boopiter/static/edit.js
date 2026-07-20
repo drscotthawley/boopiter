@@ -77,6 +77,18 @@ function boopRestartServer(){
     if(tries > 60){ clearInterval(poll); location.reload(); }  // ~30s safety timeout -- reload anyway rather than hang forever
   }, 500);
 }
+function boopShutdownServer(){
+  if(!confirm('Shut down boopiter? Unsaved notebook changes will be lost -- Save first if you want to keep them.')) return;
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(17,17,17,.92);'
+    + 'color:#ccc;display:flex;align-items:center;justify-content:center;font-size:1.1rem;'
+    + 'font-family:system-ui,sans-serif;';
+  overlay.textContent = 'Shutting down boopiter…';
+  document.body.appendChild(overlay);
+  // Unlike restart, the process never comes back -- no reload-on-reconnect polling, just fire
+  // the request and leave the overlay up for good.
+  fetch('/shutdown_server', {method:'POST'}).catch(function(){});
+}
 function boopSyncAllEditors(){
   // Flush every currently-open editor's text to the server (no execution) before Save writes to disk --
   // otherwise an edit that was never Shift-Entered would silently vanish, unlike real Jupyter's WYSIWYG save.

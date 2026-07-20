@@ -14,14 +14,14 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'set_reasoning_model', 'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu',
            'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping',
            'logo_png', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server',
-           'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type',
-           'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell',
-           'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected',
-           'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell',
-           'sync_cell']
+           'shutdown_server', 'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel',
+           'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis',
+           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks',
+           'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype',
+           'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
-import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re
+import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re, signal
 from pathlib import Path
 from fastcore.utils import *
 from fasthtml.common import *
@@ -1110,10 +1110,12 @@ def _file_menu_items() -> list:
         Li(fh.A('New', href=new_notebook.to(),
                 onclick="return confirm('Discard the current notebook and start a new one?')")),
         Li(fh.A('Open', onclick="document.getElementById('file-modal').showModal()",
-                hx_get=browse.to(), hx_target='#file-browser-body', hx_swap='innerHTML')),
+                hx_get=browse.to(path=None if nb.name == 'untitled' else str(Path(nb.name).parent)),
+                hx_target='#file-browser-body', hx_swap='innerHTML')),
         Li(fh.A('Save', href='javascript:void(0)', onclick='boopSaveNotebook()')),
         Li(fh.A('Download', href=download.to())),
         Li(fh.A('Restart Server', href='javascript:void(0)', onclick='boopRestartServer()')),
+        Li(fh.A('Shutdown', href='javascript:void(0)', onclick='boopShutdownServer()')),
     ]
 
 # %% ../nbs/01_cells.ipynb #468eedaf
@@ -1400,7 +1402,14 @@ def restart_server() -> str:
         time.sleep(0.3)  # let the HTTP response reach the browser before we touch anything disruptive
         exe = Path(sys.executable).parent/'nbdev-export'
         exe = str(exe) if exe.exists() else 'nbdev-export'
-        result = subprocess.run([exe], capture_output=True, text=True)
+        # Run from the boopiter repo root, not the process's launch cwd -- if boopiter was
+        # started from elsewhere (e.g. a sibling repo, to jump between projects), nbdev-export
+        # would otherwise run rootless and silently export nothing, so a restart would quietly
+        # keep serving the OLD code with no error surfaced anywhere. cwd= only affects this
+        # subprocess, not our own process's cwd, so the exec below still resolves sys.argv[0]
+        # and the notebook path relative to wherever we were actually launched from.
+        repo_root = Path(__file__).parent.parent
+        result = subprocess.run([exe], capture_output=True, text=True, cwd=repo_root)
         if result.returncode != 0:
             print(f'nbdev-export failed ({result.returncode}), aborting restart:\n{result.stderr}', file=sys.stderr, flush=True)
             return
@@ -1412,6 +1421,17 @@ def restart_server() -> str:
         args += ['--port', port]
         os.execv(sys.executable, args)
     threading.Thread(target=_do_restart, daemon=True).start()
+    return ''
+
+# %% ../nbs/01_cells.ipynb #6c4e3db0
+@rt
+def shutdown_server() -> str:
+    "Cleanly exit boopiter: send this process SIGTERM, the same graceful-shutdown signal Ctrl-C sends, which uvicorn catches to drain in-flight requests and exit 0. Does NOT save the notebook first -- Save manually beforehand if you want to keep unsaved edits."
+    def _do_shutdown() -> None:
+        "Runs in a background thread: waits for the HTTP response to reach the browser, then signals this same process to exit."
+        time.sleep(0.3)  # let the HTTP response reach the browser before we touch anything disruptive
+        os.kill(os.getpid(), signal.SIGTERM)
+    threading.Thread(target=_do_shutdown, daemon=True).start()
     return ''
 
 # %% ../nbs/01_cells.ipynb #ea8522f9
