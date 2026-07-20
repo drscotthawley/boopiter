@@ -45,3 +45,17 @@ div.description {
   font-size: 135%;
   opacity: 70%;
 }
+
+/* boopiter sun/moon theme toggle: theme-toggle.html injects both SVGs into Quarto's
+   own color-scheme toggle; Quarto adds `.alternate` to that toggle in dark mode.
+   Show the moon in dark (alternate), the sun in light -- matching boopiter's swap. */
+.quarto-color-scheme-toggle .bi { display: none; }
+.quarto-color-scheme-toggle svg {
+  width: 1.5rem; height: 1.5rem;   /* ~1.3x the original 1.15rem, to match Quarto's other navbar icons */
+  fill: currentColor;
+  vertical-align: -0.24em;
+  position: relative; top: 2px;    /* nudge down to line up with the search magnifier */
+}
+.quarto-color-scheme-toggle .boop-moon { display: none; }
+.quarto-color-scheme-toggle.alternate .boop-sun { display: none; }
+.quarto-color-scheme-toggle.alternate .boop-moon { display: inline-block; }
