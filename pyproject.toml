@@ -28,6 +28,12 @@ dependencies = [
     "slmn @ git+https://github.com/drscotthawley/slmn.git",
 ]
 
+[project.optional-dependencies]
+# The docs deploy (answerdotai/workflows/quarto-ghp3) and the test CI (nbdev3-ci) both hardcode
+# `pip install -e ".[dev]"`, so the llms.txt build tools -- used by the _quarto.yml pre/post-render
+# hooks (pysym2md -> apilist.txt, llms-txt's llms_txt2ctx -> llms-ctx*.txt) -- must live here.
+dev = ["pysym2md", "llms-txt"]
+
 [project.urls]
 Repository = "https://github.com/drscotthawley/boopiter"
 Documentation = "https://drscotthawley.github.io/boopiter/"
@@ -45,3 +51,4 @@ include = ["boopiter"]
 boopiter = "boopiter.core:launch"
 
 [tool.nbdev]
+allowed_cell_metadata_keys = ["boopiter"]
