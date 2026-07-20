@@ -304,6 +304,7 @@ def _start_code_run(c:'Cell', scroll:bool=False) -> FT:
     state.thread.start()
     return pending_code_cell(c, scroll=scroll)
 
+# %% ../nbs/01_cells.ipynb #874a401a
 def run_code_cell(c:'Cell', scroll:bool=False) -> FT:
     "Tell one code cell to run: stamp it with the current time, then kick off its streaming background execution. The single shared entry point for the play button, Shift-Enter, and Run All (which passes scroll=True so each cell scrolls into view as it starts). A solo run (scroll=False) cancels any in-flight or leftover Run All, so it can never chain into unrelated cells."
     global _run_all_queue, _run_all_current
