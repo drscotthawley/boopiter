@@ -992,118 +992,13 @@ def rename_form() -> FT:
                 id='fname', hx_post=rename, hx_target='#fname', hx_swap='outerHTML')
 
 # %% ../nbs/01_cells.ipynb #6560e13e
-_CAPABILITY_EMOJI = {'vision': '\U0001F441\uFE0F', 'tools': '\U0001F527', 'thinking': '\U0001F9E0'}  # capability (from get_ollama_list()'s 'capabilities') -> emoji shown after a model's name in dropdowns; capabilities we don't care about (completion -- basically universal, insert, embedding, ...) are silently ignored, and a model with none of these three gets no emoji at all
-
-def _model_label(m:dict) -> str:
-    "A model's dropdown label: its bare name, plus a trailing run of capability emojis (see _CAPABILITY_EMOJI) if it has any worth flagging."
-    emoji = ''.join(_CAPABILITY_EMOJI[c] for c in m.get('capabilities', []) if c in _CAPABILITY_EMOJI)
-    return f"{m['model']}  {emoji}" if emoji else m['model']
-
-def _model_select(models:list[dict], active_id:str|None, route) -> FT:
-    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
-    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
-    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
-                      hx_post=route, hx_trigger='change', hx_swap='none')
-
-def _dropdown_width_px(models:list[dict]) -> int:
-    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
-    longest = max((len(_model_label(m)) for m in models), default=20)
-    return max(220, min(380, 45 + longest * 8))
-
-_EFFORT_LEVELS = ('l', 'm', 'h')
-
-def brain_menu(icon_cls:str) -> FT:
-    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
-    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
-    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
-    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
-    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
-            Div('Standard model', cls='text-sm'),
-            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
-            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
-            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
-    if reasoning_models:
-        rows.append(Div(
-            Span('Effort', cls='text-xs font-semibold mr-2'),
-            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
-                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
-                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
-              for lvl in _EFFORT_LEVELS],
-            cls='flex items-center mt-2'))
-    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
-    width_px = _dropdown_width_px(nb.models)
-    return Div(
-        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
-                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
-        # width is estimated from the longest model label (see _dropdown_width_px) rather than
-        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
-        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
-        # _tw_header()) built by scanning literal class strings in the source, so a class built from
-        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
-        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
-        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
-        # same reason.
-        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
-           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
-           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
-        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
-
+_CAPABILITY_EMOJI = {'vision': '👁️', 'tools': '🔧', 'thinking': '🧠'}  # capability (from get_ollama_list()'s 'capabilities') -> emoji shown after a model's name in dropdowns; capabilities we don't care about (completion -- basically universal, insert, embedding, ...) are silently ignored, and a model with none of these three gets no emoji at all
 
 # %% ../nbs/01_cells.ipynb #745c1ce6
 def _model_label(m:dict) -> str:
     "A model's dropdown label: its bare name, plus a trailing run of capability emojis (see _CAPABILITY_EMOJI) if it has any worth flagging."
     emoji = ''.join(_CAPABILITY_EMOJI[c] for c in m.get('capabilities', []) if c in _CAPABILITY_EMOJI)
     return f"{m['model']}  {emoji}" if emoji else m['model']
-
-def _model_select(models:list[dict], active_id:str|None, route) -> FT:
-    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
-    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
-    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
-                      hx_post=route, hx_trigger='change', hx_swap='none')
-
-def _dropdown_width_px(models:list[dict]) -> int:
-    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
-    longest = max((len(_model_label(m)) for m in models), default=20)
-    return max(220, min(380, 45 + longest * 8))
-
-_EFFORT_LEVELS = ('l', 'm', 'h')
-
-def brain_menu(icon_cls:str) -> FT:
-    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
-    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
-    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
-    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
-    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
-            Div('Standard model', cls='text-sm'),
-            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
-            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
-            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
-    if reasoning_models:
-        rows.append(Div(
-            Span('Effort', cls='text-xs font-semibold mr-2'),
-            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
-                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
-                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
-              for lvl in _EFFORT_LEVELS],
-            cls='flex items-center mt-2'))
-    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
-    width_px = _dropdown_width_px(nb.models)
-    return Div(
-        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
-                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
-        # width is estimated from the longest model label (see _dropdown_width_px) rather than
-        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
-        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
-        # _tw_header()) built by scanning literal class strings in the source, so a class built from
-        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
-        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
-        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
-        # same reason.
-        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
-           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
-           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
-        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
-
 
 # %% ../nbs/01_cells.ipynb #80b17b22
 def _model_select(models:list[dict], active_id:str|None, route) -> FT:
@@ -1112,94 +1007,11 @@ def _model_select(models:list[dict], active_id:str|None, route) -> FT:
     return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
                       hx_post=route, hx_trigger='change', hx_swap='none')
 
-def _dropdown_width_px(models:list[dict]) -> int:
-    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
-    longest = max((len(_model_label(m)) for m in models), default=20)
-    return max(220, min(380, 45 + longest * 8))
-
-_EFFORT_LEVELS = ('l', 'm', 'h')
-
-def brain_menu(icon_cls:str) -> FT:
-    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
-    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
-    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
-    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
-    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
-            Div('Standard model', cls='text-sm'),
-            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
-            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
-            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
-    if reasoning_models:
-        rows.append(Div(
-            Span('Effort', cls='text-xs font-semibold mr-2'),
-            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
-                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
-                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
-              for lvl in _EFFORT_LEVELS],
-            cls='flex items-center mt-2'))
-    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
-    width_px = _dropdown_width_px(nb.models)
-    return Div(
-        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
-                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
-        # width is estimated from the longest model label (see _dropdown_width_px) rather than
-        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
-        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
-        # _tw_header()) built by scanning literal class strings in the source, so a class built from
-        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
-        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
-        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
-        # same reason.
-        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
-           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
-           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
-        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
-
-
 # %% ../nbs/01_cells.ipynb #9e3ec772
 def _dropdown_width_px(models:list[dict]) -> int:
     "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes (arrow overlapping the text) whenever a name+emoji combo ran longer than expected, applied via inline style (see brain_menu()) since a computed w-[Npx] class never works against this app's precompiled static tailwind.css. ~9px/char is a rough per-character width at this font size; the +100 covers the select's own padding/border/dropdown-arrow chrome plus the popup's own outer p-2 padding. Clamped to a sane range either way."
     longest = max((len(_model_label(m)) for m in models), default=20)
     return max(220, min(380, 45 + longest * 8))
-
-_EFFORT_LEVELS = ('l', 'm', 'h')
-
-def brain_menu(icon_cls:str) -> FT:
-    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
-    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
-    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
-    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
-    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
-            Div('Standard model', cls='text-sm'),
-            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
-            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
-            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
-    if reasoning_models:
-        rows.append(Div(
-            Span('Effort', cls='text-xs font-semibold mr-2'),
-            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
-                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
-                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
-              for lvl in _EFFORT_LEVELS],
-            cls='flex items-center mt-2'))
-    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
-    width_px = _dropdown_width_px(nb.models)
-    return Div(
-        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
-                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
-        # width is estimated from the longest model label (see _dropdown_width_px) rather than
-        # fixed, so a long name+emoji combo doesn't overflow its select box -- set via inline style,
-        # NOT a w-[Npx] utility class: this app serves a precompiled static tailwind.css (see
-        # _tw_header()) built by scanning literal class strings in the source, so a class built from
-        # an f-string with a runtime-varying number never has a matching CSS rule and silently does
-        # nothing. `left:50%; transform:translateX(-50%)` (centering -- DaisyUI's dropdown only
-        # offers left/right anchoring, neither of which centers on the trigger) is inline for the
-        # same reason.
-        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
-           style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
-           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
-        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
-
 
 # %% ../nbs/01_cells.ipynb #fada779f
 _EFFORT_LEVELS = ('l', 'm', 'h')
@@ -1249,38 +1061,6 @@ def _apply_active_model(prev_active:str|None) -> None:
         try: subprocess.run(['ollama', 'stop', prev_active.removeprefix('ollama/')], capture_output=True, timeout=5)
         except Exception: pass
 
-@rt
-def set_standard_model(model:str) -> str:
-    "Change the Standard-model pick in the brain menu. Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
-    if any(m['id'] == model for m in nb.models) and model != nb.standard_model:
-        prev_active = nb.active_model()
-        nb.standard_model = model
-        _apply_active_model(prev_active)
-    return ''
-
-@rt
-def set_reasoning_model(model:str) -> str:
-    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
-    if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
-        prev_active = nb.active_model()
-        nb.reasoning_model = model
-        _apply_active_model(prev_active)
-    return ''
-
-@rt
-def toggle_reasoning() -> FT:
-    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
-    prev_active = nb.active_model()
-    nb.use_reasoning = not nb.use_reasoning
-    _apply_active_model(prev_active)
-    return brain_menu(_TOPBAR_ICON_CLS_LG)
-
-@rt
-def set_reasoning_effort(effort:str) -> str:
-    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
-    nb.reasoning_effort = effort
-    return ''
-
 # %% ../nbs/01_cells.ipynb #bc2d594c
 @rt
 def set_standard_model(model:str) -> str:
@@ -1289,29 +1069,6 @@ def set_standard_model(model:str) -> str:
         prev_active = nb.active_model()
         nb.standard_model = model
         _apply_active_model(prev_active)
-    return ''
-
-@rt
-def set_reasoning_model(model:str) -> str:
-    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
-    if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
-        prev_active = nb.active_model()
-        nb.reasoning_model = model
-        _apply_active_model(prev_active)
-    return ''
-
-@rt
-def toggle_reasoning() -> FT:
-    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
-    prev_active = nb.active_model()
-    nb.use_reasoning = not nb.use_reasoning
-    _apply_active_model(prev_active)
-    return brain_menu(_TOPBAR_ICON_CLS_LG)
-
-@rt
-def set_reasoning_effort(effort:str) -> str:
-    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
-    nb.reasoning_effort = effort
     return ''
 
 # %% ../nbs/01_cells.ipynb #ee97c857
@@ -1324,6 +1081,7 @@ def set_reasoning_model(model:str) -> str:
         _apply_active_model(prev_active)
     return ''
 
+# %% ../nbs/01_cells.ipynb #cee2215a
 @rt
 def toggle_reasoning() -> FT:
     "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
@@ -1332,20 +1090,7 @@ def toggle_reasoning() -> FT:
     _apply_active_model(prev_active)
     return brain_menu(_TOPBAR_ICON_CLS_LG)
 
-@rt
-def set_reasoning_effort(effort:str) -> str:
-    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
-    nb.reasoning_effort = effort
-    return ''
-
 # %% ../nbs/01_cells.ipynb #4c41b4b9
-@rt
-def set_reasoning_effort(effort:str) -> str:
-    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
-    nb.reasoning_effort = effort
-    return ''
-
-# %% ../nbs/01_cells.ipynb #f11fc0a7
 @rt
 def set_reasoning_effort(effort:str) -> str:
     "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
@@ -1365,19 +1110,6 @@ def _file_menu_items() -> list:
         Li(fh.A('Restart Server', href='javascript:void(0)', onclick='boopRestartServer()')),
     ]
 
-def file_menu() -> FT:
-    "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
-    return Div(
-        Div(Icon('bars-3'), tabindex='0', role='button', cls='btn btn-ghost btn-circle btn-sm'),
-        Ul(*_file_menu_items(), tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
-        cls='dropdown dropdown-bottom')
-
-def context_menu() -> FT:
-    "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
-    return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
-              cls='menu bg-base-200 rounded-box z-50 w-40 p-1 shadow fixed hidden')
-
-
 # %% ../nbs/01_cells.ipynb #468eedaf
 def file_menu() -> FT:
     "Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server."
@@ -1385,12 +1117,6 @@ def file_menu() -> FT:
         Div(Icon('bars-3'), tabindex='0', role='button', cls='btn btn-ghost btn-circle btn-sm'),
         Ul(*_file_menu_items(), tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-40 p-1 shadow'),
         cls='dropdown dropdown-bottom')
-
-def context_menu() -> FT:
-    "The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey."
-    return Ul(*_file_menu_items(), id='context-menu', tabindex='0',
-              cls='menu bg-base-200 rounded-box z-50 w-40 p-1 shadow fixed hidden')
-
 
 # %% ../nbs/01_cells.ipynb #824a254f
 def context_menu() -> FT:
@@ -1481,14 +1207,6 @@ def tools_menu(icon_cls:str) -> FT:
 def _plugin_slug(name:str) -> str:
     "A plugin name as a DOM-id-safe slug, e.g. 'System monitor' -> 'system-monitor'."
     return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
-
-def _plugin_panel(name:str) -> FT:
-    "Self-polling wrapper around the named plugin's render(): re-fetches itself (outerHTML, carrying its own hx-trigger along so polling continues) roughly every 2s, but the JS trigger filter only actually issues that request while the mouse is over the plugin's dropdown -- so the panel is inert (no requests) until hovered, and stops again the moment you mouse away. Mirrors the _run_output_div/run_code_poll self-polling idiom already used for streaming code/prompt cells. Keyed by name (not list index) -- fastcore's qp() treats 0 as falsy (0 in (False,None) is True in Python) and silently drops an idx=0 query param, so an int index is a trap for the first-registered plugin."
-    pl = next(p for p in PLUGINS if p.name == name)
-    dom_id = f'plugin-panel-{_plugin_slug(name)}'
-    return Div(pl.render(), id=dom_id,
-               hx_get=plugin_panel_poll.to(name=name), hx_target=f'#{dom_id}', hx_swap='outerHTML',
-               hx_trigger="every 2s [this.closest('.dropdown').matches(':hover')]")
 
 # %% ../nbs/01_cells.ipynb #18241b4e
 def _plugin_panel(name:str) -> FT:
