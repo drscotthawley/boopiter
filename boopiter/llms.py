@@ -128,10 +128,12 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|
 
 _DEADDROP_DIR = Path.home() / 'dead_drop'  # prompts/ and responses/ subdirs -- see slmn.dead_drop
 
-def _deaddrop_stream_reply(context:str, poll_interval:float=1.0):
-    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); everything before it becomes the final reply. No details_html -- there's no API response object to summarize."
+def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
+    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); everything before it becomes the final reply. There's no API response object to summarize, so details_html is just a minimal <details> block naming `model` -- kept in the same collapsible spot as `_reply_details_html`'s real metadata, for header uniformity with the Ollama path (see cell_header() in cells.py)."
     path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context)
     resp_path = _DEADDROP_DIR / 'responses' / Path(path).name
+    details_html = (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
+                     f'<ul><li>Model: {model}</li></ul></details>')
     seen = 0
     while True:
         if resp_path.exists():
@@ -140,7 +142,7 @@ def _deaddrop_stream_reply(context:str, poll_interval:float=1.0):
             if stripped.endswith('---DONE---'):
                 content = stripped[:-len('---DONE---')].rstrip()
                 if len(content) > seen: yield ('delta', content[seen:])
-                yield ('final', content, None)
+                yield ('final', content, details_html)
                 return
             if len(text) > seen:
                 yield ('delta', text[seen:])
@@ -150,7 +152,7 @@ def _deaddrop_stream_reply(context:str, poll_interval:float=1.0):
 def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None):
     "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered."
     if model.startswith('deaddrop/'):
-        yield from _deaddrop_stream_reply(context)
+        yield from _deaddrop_stream_reply(context, model)
         return
     chat = Chat(model, sp=tools_system_prompt(tools), tools=[], callkw={'_skip_mcp_handler': True})
     for chunk in chat(context, stream=True, think=think):
