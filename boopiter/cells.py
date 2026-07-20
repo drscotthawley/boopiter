@@ -1091,7 +1091,8 @@ def help_modal() -> FT:
     editing_mode = [
         ('Shift / Ctrl / Cmd + Enter', 'Save (and run) the cell'),
         ('Ctrl / Cmd + /', 'Toggle line comments'),
-        ('Shift + Ctrl / Cmd + -', 'Split the cell at the cursor'),
+        ('Ctrl / Cmd + -', 'Split the cell at the cursor'),
+        ('Esc', 'Cancel editing, discarding unsaved changes'),
     ]
     def section(title, pairs):
         # kbd-sm rendered visibly smaller than the description text next to it -- drop the size
@@ -1433,11 +1434,11 @@ def split(source:str, pos:int) -> tuple:
 # %% ../nbs/01_cells.ipynb #0e3e3053
 @rt
 def split_cell(id:int, pos:int) -> FT|tuple:
-    "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. Neither half is (re-)executed. Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
+    "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. Neither half is (re-)executed, and any existing output is cleared -- it was produced by the *whole* original code, so it doesn't correctly belong to either fragment alone (e.g. a plot statement can end up in either half after the split, stranding old output next to code that didn't produce it). Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
     c = nb.get(id)
     if not c: return ''
     head, tail = c.source[:pos], c.source[pos:]
-    c.source = head.rstrip('\n')
+    c.source, c.output = head.rstrip('\n'), None
     i = nb.index(c.id)
     new = nb.insert_at(i+1, c.ctype, tail.lstrip('\n'), export=c.export)
     nb.selected = new.id

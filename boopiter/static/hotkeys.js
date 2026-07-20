@@ -31,7 +31,7 @@
       if (a && a.tagName === 'TEXTAREA') { toggleComment(a); e.preventDefault(); }
       return;
     }
-    if (mod && e.shiftKey && (e.code === 'Minus' || e.key === '-' || e.key === '_')) {
+    if (mod && (e.code === 'Minus' || e.key === '-' || e.key === '_')) {
       if (a && a.id === 'compose-input') {
         htmx.ajax('POST', '/split', {target:'#app', swap:'outerHTML',
                    values:{source: a.value, pos: a.selectionStart}});

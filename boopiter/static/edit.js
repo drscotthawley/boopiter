@@ -19,12 +19,31 @@ function boopComposerSubmit(){
 }
 function boopRestartServer(){
   if(!confirm('Restart boopiter? Unsaved notebook changes will be lost -- Save first if you want to keep them.')) return;
+  // A dark overlay from the moment we click through to the moment location.reload() actually
+  // fires a real navigation -- covering the whole restart window (not just the reload instant)
+  // means there's no way to mistake a still-stale page for the new one; the overlay only ever
+  // goes away via a genuine fresh page load, never by JS alone.
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(17,17,17,.92);'
+    + 'color:#ccc;display:flex;align-items:center;justify-content:center;font-size:1.1rem;'
+    + 'font-family:system-ui,sans-serif;';
+  overlay.textContent = 'Restarting boopiter…';
+  document.body.appendChild(overlay);
   fetch('/restart_server', {method:'POST'}).catch(function(){});
-  var tries = 0;
+  // The old process keeps serving _boopiter_ping (and everything else) for as long as
+  // nbdev-export takes -- restart_server() runs that in a background thread, so the *first*
+  // ping after clicking almost always still hits the *old* server, not the new one. Reloading
+  // on that first success reloads too early (looks like a flicker, still stale code). Only
+  // reload once we've actually observed a failed ping (the old process is genuinely gone)
+  // followed by a success (the new one is up) -- and if we somehow never catch the down-moment
+  // in our polling interval, fall back to reloading anyway once we time out.
+  var tries = 0, wentDown = false;
   var poll = setInterval(function(){
     tries++;
-    fetch('/_boopiter_ping').then(function(r){ if(r.ok){ clearInterval(poll); location.reload(); } }).catch(function(){});
-    if(tries > 60) clearInterval(poll);  // ~30s safety timeout
+    fetch('/_boopiter_ping').then(function(r){
+      if(r.ok && wentDown){ clearInterval(poll); location.reload(); }
+    }).catch(function(){ wentDown = true; });
+    if(tries > 60){ clearInterval(poll); location.reload(); }  // ~30s safety timeout -- reload anyway rather than hang forever
   }, 500);
 }
 function boopSyncAllEditors(){
@@ -62,12 +81,12 @@ function boopMakeCM(ta, isComposer){
   var extra = isComposer ? {
       'Shift-Enter': boopComposerSubmit, 'Ctrl-Enter': boopComposerSubmit, 'Cmd-Enter': boopComposerSubmit,
       'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); },
-      'Shift-Ctrl--': function(cm){ boopComposerSplit(cm); }, 'Shift-Cmd--': function(cm){ boopComposerSplit(cm); }
+      'Ctrl--': function(cm){ boopComposerSplit(cm); }, 'Cmd--': function(cm){ boopComposerSplit(cm); }
     } : {
       'Shift-Enter': function(){ boopSave(id); }, 'Ctrl-Enter': function(){ boopSave(id); }, 'Cmd-Enter': function(){ boopSave(id); },
       'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); },
-      'Shift-Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
-      'Shift-Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
+      'Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
+      'Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
       'Esc': function(){ boopCancelEdit(id); }  // code cells only -- the composer keeps its own default Esc behavior (nothing to "cancel" there)
     };
   var cm = CodeMirror.fromTextArea(ta, {
@@ -126,7 +145,7 @@ function boopInitEditors(root){
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
       ta.addEventListener('keydown', function(e){
         if((e.shiftKey||e.ctrlKey||e.metaKey) && e.key === 'Enter'){ e.preventDefault(); boopSave(ta.getAttribute('data-cid')); }
-        else if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
+        else if((e.ctrlKey||e.metaKey) && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
           e.preventDefault(); boopSplitCell(ta.getAttribute('data-cid'), ta.selectionStart);
         }
         else if(e.key === 'Escape'){ e.preventDefault(); boopCancelEdit(ta.getAttribute('data-cid')); }
