@@ -8,7 +8,7 @@ Docs: https://drscotthawley.github.io/boopiter/core.html.md"""
 __all__ = ['launch']
 
 # %% ../nbs/00_core.ipynb #74add773
-import os, subprocess, sys, time, urllib.request, urllib.error
+import os, subprocess, sys, time, urllib.request, urllib.error, secrets
 from pathlib import Path
 from typing import Annotated
 from fastcore.script import call_parse
@@ -54,6 +54,7 @@ def _build_tailwind():
 def launch(
     nbfile: Annotated[str, {'opt': False, 'nargs': '?'}] = None,  # .ipynb file to load on startup
     port: int = 8000,  # the port to serve boopiter on
+    no_auth: bool = False,  # skip token-gating the server -- ONLY on a network you fully trust; every code cell already runs with this process's own permissions, so an unauthed boopiter is equivalent to handing out a shell
 ):
     "Launch (or relaunch) the boopiter server; refuses to touch a port held by something that isn't boopiter"
     owner = _port_owner(port)
@@ -71,6 +72,17 @@ def launch(
         except FileNotFoundError:
             print(f"No such notebook: {nbfile} -- starting with a blank notebook instead.", file=sys.stderr)
     os.environ['BOOPITER_PORT'] = str(port)  # lets a self-restart (see cells.restart_server) rebind the same port
+    # BOOPITER_TOKEN/BOOPITER_NO_AUTH are read straight from the environment on every launch (including
+    # cells.restart_server's os.execv self-restart, which inherits the environment unchanged) -- so a
+    # token generated here survives restarts instead of silently invalidating every open browser session.
+    if no_auth: os.environ['BOOPITER_NO_AUTH'] = '1'
+    if os.environ.get('BOOPITER_NO_AUTH') == '1':
+        print(f"\n⚠️  boopiter is running WITHOUT auth (--no_auth) -- anyone who can reach port {port} "
+              f"has full code execution as you. Only do this on a network you fully trust.\n", file=sys.stderr)
+    else:
+        token = os.environ.get('BOOPITER_TOKEN') or secrets.token_urlsafe(24)
+        os.environ['BOOPITER_TOKEN'] = token
+        print(f"\nboopiter is token-gated. Open:\n\n    http://localhost:{port}/?token={token}\n")
     import uvicorn
     uvicorn.run('boopiter.cells:app', host='0.0.0.0', port=port)
 
