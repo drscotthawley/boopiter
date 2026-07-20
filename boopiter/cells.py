@@ -1316,7 +1316,16 @@ def index() -> tuple:
     "The full page: title, top bar, the notebook+composer, and the save-toast slot."
     return (Title('boopiter'),
             Div(top_bar(),
-                Div(Div(render_app(), cls='max-w-3xl mx-auto p-4'),
+                # No hard max-width -- margins scale with viewport (up to a cap) instead of the
+                # content column stopping short and leaving big dead space on a widened window,
+                # which is exactly what you want more of when a long code line runs off-screen.
+                # The right margin is nudged in by 4px (border-l-4's width) to compensate: cells'
+                # colored left border sits flush against the left margin, and that hard color
+                # edge visually reads as *the* boundary, making the left margin look narrower
+                # than the right even though both insets are numerically equal.
+                Div(Div(render_app(), cls='py-4',
+                        style='padding-left: clamp(0.5rem, 4vw, 100px); '
+                              'padding-right: calc(clamp(0.5rem, 4vw, 100px) - 4px)'),
                     cls='flex-1 overflow-y-auto'),
                 Div(id='save-toast', cls='toast toast-top toast-end z-50'),
                 cls='h-screen flex flex-col'))
