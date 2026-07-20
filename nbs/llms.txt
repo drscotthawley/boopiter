@@ -1,0 +1,21 @@
+# boopiter
+
+> boop-iter notebook LLM workflow -- cells are "boops," iteratively keeping the human in the loop. A vibe-coded, education-focused clone of and homage to the solveit GUI: a local-execution notebook where prompt cells are answered by a local LLM (via Ollama), built with FastHTML and nbdev.
+
+boopiter is organized as a handful of small nbdev modules: a pure in-memory notebook data
+model, a code-execution kernel, an `.ipynb` file boundary, a local-LLM interface, a FastHTML
+UI that ties them together, and a small top-bar plugin system.
+
+## Docs
+
+- [core](https://drscotthawley.github.io/boopiter/core.html.md): server startup -- launch/relaunch the app on a port, precompile Tailwind
+- [notebook](https://drscotthawley.github.io/boopiter/notebook.html.md): the in-memory notebook data model -- a typed `Cell`, the `Notebook`, and the running `nb`
+- [kernel](https://drscotthawley.github.io/boopiter/kernel.html.md): the code-execution engine -- run a cell's source and stream its output
+- [serialize](https://drscotthawley.github.io/boopiter/serialize.html.md): the `.ipynb` file boundary -- save the live notebook and load one back
+- [llms](https://drscotthawley.github.io/boopiter/llms.html.md): talking to a local LLM via Ollama -- tool selection, model listing, streaming replies
+- [cells](https://drscotthawley.github.io/boopiter/cells.html.md): rendering + HTTP routes + app orchestration -- the FastHTML UI
+- [plugins](https://drscotthawley.github.io/boopiter/plugins.html.md): the top-bar plugin protocol, plus a system-monitor plugin
+
+## Optional
+
+- [API list](https://drscotthawley.github.io/boopiter/apilist.txt): full symbol + docstring listing for the whole package

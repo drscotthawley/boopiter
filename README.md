@@ -7,36 +7,36 @@
 
 This is a vibe-coded clone of and homage to the amazing [solveit](https://solve.it.com/) GUI, intended primarily for education purposes: learning the basic operations so that I can easily work with local execution and develop my own extensions and features as my research work expands.
 
-## Developer Guide
+## What’s inside
 
-If you are new to using `nbdev` here are some useful pointers to get you started.
+boopiter is organized as a handful of small nbdev modules, each in its own notebook:
 
-### Install boopiter in Development mode
+| module | what it does |
+|----|----|
+| [core](core.html) | server startup – launch/relaunch the app on a port, precompile Tailwind |
+| [notebook](notebook.html) | the in-memory notebook data model: a typed [`Cell`](https://drscotthawley.github.io/boopiter/notebook.html#cell), the [`Notebook`](https://drscotthawley.github.io/boopiter/notebook.html#notebook), and the running `nb` |
+| [kernel](kernel.html) | the code-execution engine – run a cell’s source and stream its output |
+| [serialize](serialize.html) | the `.ipynb` file boundary – save the live notebook and load one back |
+| [llms](llms.html) | talking to a local LLM via Ollama: tool selection, model listing, streaming replies |
+| [cells](cells.html) | rendering + HTTP routes + app orchestration – the FastHTML UI that ties it together |
+| [plugins](plugins.html) | the top-bar plugin protocol, plus a system-monitor plugin |
 
-``` sh
-# make sure boopiter package is installed in development mode
-$ pip install -e .
+## Installation
 
-# make changes under nbs/ directory
-# ...
-
-# compile to have changes apply to boopiter
-$ nbdev_prepare
-```
-
-## Usage
-
-### Installation
-
-Install latest from the GitHub [repository](https://github.com/drscotthawley/boopiter):
+boopiter isn’t on PyPI or conda; install it from GitHub:
 
 ``` sh
-$ pip install git+https://github.com/drscotthawley/boopiter.git
+pip install git+https://github.com/drscotthawley/boopiter.git
 ```
 
-### Documentation
+To hack on it, clone and install in editable mode – it’s an nbdev project, so the notebooks
+under `nbs/` are the source and the `boopiter/` package is generated from them:
 
-Documentation can be found hosted on this GitHub [repository](https://github.com/drscotthawley/boopiter)’s [pages](https://drscotthawley.github.io/boopiter/). Additionally you can find package manager specific guidelines on [conda](https://anaconda.org/drscotthawley/boopiter) and [pypi](https://pypi.org/project/boopiter/) respectively.
+``` sh
+git clone https://github.com/drscotthawley/boopiter.git
+cd boopiter
+pip install -e .
+```
 
 ## How to use
 

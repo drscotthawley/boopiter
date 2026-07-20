@@ -1,4 +1,4 @@
-"""Basic server-startup stuff
+"""Server startup: bring the boopiter web app up on a port (or cleanly relaunch it), refusing to stomp on a port held by something that isn't boopiter. Precompiles Tailwind once, then starts the server; `launch` is the entry point the CLI and notebook both call.
 
 Docs: https://drscotthawley.github.io/boopiter/core.html.md"""
 
