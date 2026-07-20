@@ -51,4 +51,8 @@ include = ["boopiter"]
 boopiter = "boopiter.core:launch"
 
 [tool.nbdev]
-allowed_cell_metadata_keys = ["boopiter"]
+# Prompt/reply structure now lives in cell SOURCE (solveit separator), so boopiter no longer
+# depends on any metadata surviving nbdev-clean. We still stamp `solveit_ai:true` on prompt/reply
+# cells for solveit interop and register it here so nbdev-clean preserves it -- but losing it would
+# not break boopiter's own loading. See nbs/04_serialize.ipynb.
+allowed_cell_metadata_keys = ["solveit_ai"]
