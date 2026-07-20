@@ -1,4 +1,4 @@
-"""The .ipynb file boundary: serialize the in-memory `nb` (see notebook.py) to a real Jupyter notebook and load one back, round-tripping cell types, visibility, output blocks, assistant `details`, and the nbdev `#| export` pragma. Kept apart from both the data model (notebook.py) and the rendering/routes (cells.py) so the file-format concerns live in one place.
+"""The .ipynb file boundary: serialize the in-memory `nb` (see notebook.py) to a real Jupyter notebook and load one back. A Prompt cell and its Assistant reply are stored solveit-style as a single markdown cell -- the prompt, a `##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_... -->` line, then the reply -- so their structure lives in the cell *source* (which `nbdev-clean` leaves untouched) rather than in metadata (which it strips). Kept apart from the data model (notebook.py) and the rendering/routes (cells.py) so file-format concerns live in one place.
 
 Docs: https://drscotthawley.github.io/boopiter/serialize.html.md"""
 
@@ -8,6 +8,7 @@ Docs: https://drscotthawley.github.io/boopiter/serialize.html.md"""
 __all__ = ['save_notebook', 'load_notebook']
 
 # %% ../nbs/04_serialize.ipynb #serializeimports
+import re, secrets
 from pathlib import Path
 import nbformat as _nbf
 from .notebook import nb, Notebook, CTYPES
@@ -29,7 +30,33 @@ def _strip_export(source:str) -> str:
     return rest[1] if len(rest) > 1 else ''
 
 # %% ../nbs/04_serialize.ipynb #c7096cb2
-_BOOP2NB = {'code':'code', 'note':'markdown', 'prompt':'markdown', 'raw':'raw', 'assistant':'markdown'}  # our ctype -> nbformat cell_type
+# boopiter stores a Prompt cell and its Assistant reply as ONE markdown cell on disk, using
+# solveit's exact separator -- so the files interoperate with solveit, and (the real point) the
+# prompt/reply structure lives in the cell SOURCE, which nbdev-clean leaves untouched, instead of
+# in cell metadata, which nbdev-clean strips. On-disk shape of a prompt+reply markdown cell:
+#     <prompt source>
+#
+#     ##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_<hex> -->
+#
+#     <assistant details block, if any>
+#     <reply source>
+# The <hex> is the reply's stable id (reused across saves so re-saving doesn't churn git diffs).
+_SEP_RE = re.compile(r'\n*##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_([0-9a-f]+) -->\n*')
+
+def _reply_sep(hexid:str) -> str:
+    "The solveit reply-separator line, carrying `hexid` as the reply's stable id."
+    return f'##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_{hexid} -->'
+
+def _split_reply(reply_blob:str):
+    "Split a leading <details>...</details> block (the assistant's model/token info) off the reply text; returns (details_or_None, reply_text)."
+    s = reply_blob.lstrip('\n')
+    if s.startswith('<details'):
+        end = s.find('</details>')
+        if end != -1:
+            end += len('</details>')
+            return s[:end], s[end:].lstrip('\n')
+    return None, reply_blob
+
 
 # %% ../nbs/04_serialize.ipynb #e642cc22
 def _blocks_to_nb_outputs(blocks:list[dict]) -> list:
@@ -63,49 +90,73 @@ def _nb_outputs_to_blocks(outputs:list) -> list[dict]:
 
 # %% ../nbs/04_serialize.ipynb #e3ceb49a
 def save_notebook(path:str|Path|None=None) -> Path:
-    "Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd, by default). Preserves each cell's original .ipynb id (or captures a freshly-assigned one) so unchanged cells don't produce noisy git diffs. The '#| export' pragma is prepended to code cell source here (and only here) -- nbdev's own parser needs it literally in the file, but boopiter keeps it out of c.source/the editor; see load_notebook() for the inverse."
+    "Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd by default). A Prompt cell and the Assistant reply that follows it are stored solveit-style as a SINGLE markdown cell -- prompt, a `##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_... -->` line, the assistant's `<details>` block, then the reply -- so the prompt/reply structure lives in the cell source (which nbdev-clean leaves alone) rather than in strippable metadata. note/code/raw stay plain native cells; code cells keep their `#| export` pragma and outputs. Cell ids (and the separator's reply-id hex) are preserved across saves so unchanged cells don't churn git diffs. A `solveit_ai:true` flag is also stamped on prompt/reply cells for solveit's benefit -- boopiter itself relies only on the separator."
     path = Path(path) if path else Path.cwd()/f'{nb.name}.ipynb'
     doc = _nbf.v4.new_notebook()
-    for c in nb.cells:
-        meta = {'boopiter': {'ctype': c.ctype, 'visible': c.visible, 'details': c.details}}
-        kind = _BOOP2NB.get(c.ctype, 'raw')
+    cells = nb.cells
+    i = 0
+    while i < len(cells):
+        c = cells[i]
         idkw = {'id': c.nb_id} if c.nb_id else {}
-        src = f'#| export\n{c.source}' if (c.ctype == 'code' and c.export) else c.source
-        if kind == 'code':
+        if c.ctype == 'prompt':
+            reply = cells[i+1] if i+1 < len(cells) and cells[i+1].ctype == 'assistant' else None
+            hexid = reply.nb_id if (reply and reply.nb_id and re.fullmatch(r'[0-9a-f]+', reply.nb_id)) else secrets.token_hex(4)
+            parts = [c.source, '', _reply_sep(hexid)]
+            if reply is not None:
+                if reply.details: parts += ['', reply.details]
+                parts += ['', reply.source]
+            cell = _nbf.v4.new_markdown_cell('\n'.join(parts), metadata={'solveit_ai': True}, **idkw)
+            c.nb_id = cell['id']
+            if reply is not None:
+                reply.nb_id = hexid   # keep the reply's id stable across saves
+                i += 1                # this assistant is folded into the cell above
+        elif c.ctype == 'code':
+            src = f'#| export\n{c.source}' if c.export else c.source
             outputs = _blocks_to_nb_outputs(c.output) if c.output else []
-            cell = _nbf.v4.new_code_cell(src, outputs=outputs, metadata=meta, **idkw)
-        elif kind == 'markdown':
-            cell = _nbf.v4.new_markdown_cell(src, metadata=meta, **idkw)
-        else:
-            cell = _nbf.v4.new_raw_cell(src, metadata=meta, **idkw)
-        c.nb_id = cell['id']  # capture the (possibly just-generated) id so future saves reuse it too
+            cell = _nbf.v4.new_code_cell(src, outputs=outputs, **idkw); c.nb_id = cell['id']
+        elif c.ctype == 'raw':
+            cell = _nbf.v4.new_raw_cell(c.source, **idkw); c.nb_id = cell['id']
+        else:  # note, or a lone assistant with no preceding prompt -> plain markdown
+            cell = _nbf.v4.new_markdown_cell(c.source, **idkw); c.nb_id = cell['id']
         doc.cells.append(cell)
+        i += 1
     _nbf.write(doc, str(path))
     return path
+
 
 # %% ../nbs/04_serialize.ipynb #52e1b897
 _NB_FALLBACK = {'code':'code', 'markdown':'note', 'raw':'raw'}  # nbformat cell_type -> our ctype, for plain (non-boopiter) notebooks
 
 # %% ../nbs/04_serialize.ipynb #db5ac250
 def load_notebook(path:str|Path) -> Notebook:
-    "Load a Jupyter notebook file into `nb`, replacing its current contents. Inverse of save_notebook() -- detects a leading '#| export' line on code cells, sets c.export, and strips it out of the stored/displayed source."
+    "Load a Jupyter notebook file into `nb`, replacing its current contents -- the inverse of save_notebook(). A markdown cell containing the `SOLVEIT_SEPARATOR` splits back into a Prompt cell plus its Assistant reply (with the `<details>` block re-extracted into `details`); other markdown is a note; code cells get their leading `#| export` detected and stripped. For notebooks saved by older boopiter it falls back to reading legacy `metadata.boopiter` (ctype/visible/details); for plain non-boopiter notebooks it falls back to nbformat cell types."
     path = Path(path)
     doc = _nbf.read(str(path), as_version=4)
-    nb.cells.clear()
-    nb._nid = 0
-    nb.selected = None
+    nb.cells.clear(); nb._nid = 0; nb.selected = None
     for cell in doc.cells:
-        meta = cell.get('metadata', {}).get('boopiter', {})
-        ctype = meta.get('ctype')
-        if ctype not in CTYPES + ('assistant',):
-            ctype = _NB_FALLBACK.get(cell.cell_type, 'raw')  # plain (non-boopiter) notebook
-        output = None
-        if ctype == 'code':
+        t, src = cell.cell_type, cell.source
+        legacy = cell.get('metadata', {}).get('boopiter', {})
+        if t == 'code':
+            exported = _has_export(src)
+            if exported: src = _strip_export(src)
             output = _nb_outputs_to_blocks(cell.get('outputs', [])) or None
-        src, exported = cell.source, False
-        if ctype == 'code' and _has_export(src):
-            exported, src = True, _strip_export(src)
-        nb.add(ctype, src, output=output, visible=meta.get('visible', True), nb_id=cell.get('id'),
-               export=exported, details=meta.get('details'))
+            nb.add('code', src, output=output, nb_id=cell.get('id'), export=exported,
+                   visible=legacy.get('visible', True))
+        elif t == 'raw':
+            nb.add('raw', src, nb_id=cell.get('id'), visible=legacy.get('visible', True))
+        else:  # markdown: prompt(+assistant), legacy-tagged, or plain note
+            m = _SEP_RE.search(src)
+            if m:
+                nb.add('prompt', src[:m.start()].rstrip('\n'), nb_id=cell.get('id'))
+                reply_blob = src[m.end():]
+                if reply_blob.strip():
+                    details, reply_text = _split_reply(reply_blob)
+                    nb.add('assistant', reply_text, details=details, nb_id=m.group(1))
+            elif legacy.get('ctype') in CTYPES + ('assistant',):
+                nb.add(legacy['ctype'], src, nb_id=cell.get('id'),
+                       visible=legacy.get('visible', True), details=legacy.get('details'))
+            else:
+                nb.add('note', src, nb_id=cell.get('id'))
     nb.name = str(path.with_suffix(''))  # keep the directory, only strip .ipynb
     return nb
+
