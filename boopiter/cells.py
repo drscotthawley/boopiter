@@ -35,7 +35,7 @@ import nbformat as _nbf
 from lisette import *
 from .llms import *  # get_tool_list, get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
 from .llms import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llms.py's __all__, so import * won't bring them in
-from .plugins import *  # PLUGINS/start_plugins/Plugin -- a leaf module (imports only external libs, never this one), so no circular import; see nbs/04_plugins.ipynb
+from .plugins import *  # PLUGINS/start_plugins/Plugin -- a leaf module (imports only external libs, never this one), so no circular import; see nbs/03_plugins.ipynb
 
 
 # %% ../nbs/01_cells.ipynb #c7250022
