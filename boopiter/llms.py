@@ -44,19 +44,20 @@ def get_tool_list(selection:dict=None # which tool sources to include -- keys 'b
     return tools
 
 # %% ../nbs/02_llms.ipynb #9df9b2f0
-def get_ollama_list(): 
-    "Get a list of supported ollama models; returns [] and warns if Ollama unavailable."
+def get_ollama_list() -> list[dict]:
+    "Get info on every locally-available Ollama model, straight from /api/tags -- each dict is the raw entry (name, details incl. parameter_size/family, and capabilities e.g. 'vision'/'tools'/'thinking') plus an added 'id' key ('ollama/<model>', the string used elsewhere as the model identifier -- see nb.model). Returns [] and warns if Ollama unavailable."
     import httpx, warnings
     try:
-        models = httpx.get("http://localhost:11434/api/tags").json()
-        return ['ollama/'+m['model'] for m in models.get('models', [])]
+        models = httpx.get("http://localhost:11434/api/tags").json().get('models', [])
+        for m in models: m['id'] = 'ollama/' + m['model']
+        return models
     except Exception as e:
         warnings.warn(f"Ollama not available: {e}")
         return []
 
 # %% ../nbs/02_llms.ipynb #a2b64307
-def get_model_list(): 
-    "wrapper routine to get list of all available models from all sources"
+def get_model_list() -> list[dict]:
+    "Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources."
     return get_ollama_list()  # TODO: add more model source, e.g. cloud, fileio
 
 # %% ../nbs/02_llms.ipynb #b7fdcd9f
@@ -114,19 +115,19 @@ def tools_system_prompt(tools:list|None) -> str:
         "directly; these helper functions are irrelevant to those."
     )
 
-def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None) -> tuple[str,str]:
-    "Send a prompt to the LLM; returns (content, details_html) -- the reply text itself, and a separate collapsible <details> block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. `tools`, if given, are described via tools_system_prompt() (code-callable, not native tool-calling) -- see there for why."
+def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|None=None, think:str|None=None) -> tuple[str,str]:
+    "Send a prompt to the LLM; returns (content, details_html) -- the reply text itself, and a separate collapsible <details> block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. `tools`, if given, are described via tools_system_prompt() (code-callable, not native tool-calling) -- see there for why. `think`, if given ('l'/'m'/'h'), is lisette's own reasoning-effort control -- passed straight through to litellm, which maps it to Ollama's 'think' request field; only meaningful for a model that actually supports thinking (see the brain-icon reasoning-model picker)."
     # _skip_mcp_handler avoids litellm's MCP-proxy import chain (needs fastapi/orjson) that we don't use.
     # Drop it (and re-add fastapi/orjson to pyproject.toml) if/when we actually want MCP tool support.
     chat = Chat(model, sp=tools_system_prompt(tools), tools=[], callkw={'_skip_mcp_handler': True}) # FYI: this makes a fresh stateless context each time. is that what we want?
-    response = chat(context)
+    response = chat(context, think=think)
     msg = contents(response)
     return msg.content, _reply_details_html(response, msg)
 
-def stream_llm_reply(context:str, model:str, tools:list|None=None):
-    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module."
+def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None):
+    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm()."
     chat = Chat(model, sp=tools_system_prompt(tools), tools=[], callkw={'_skip_mcp_handler': True})
-    for chunk in chat(context, stream=True):
+    for chunk in chat(context, stream=True, think=think):
         if hasattr(chunk.choices[0], 'message'):  # the final item -- a full ModelResponse, not a delta
             msg = contents(chunk)
             yield ('final', msg.content, _reply_details_html(chunk, msg))

@@ -10,16 +10,17 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'CTYPES', 'nb', 'BROWSE_ROOT', 'BORDE
            'add_tool', 'llm_context', 'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown',
            'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'save_notebook', 'load_notebook',
-           'fname_display', 'rename_form', 'model_dropdown', 'set_model', 'file_menu', 'context_menu',
-           'file_browser_modal', 'help_modal', 'tools_menu', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css',
-           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename',
-           'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell',
-           'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select',
-           'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
-           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'fname_display', 'rename_form', 'brain_menu', 'set_standard_model', 'set_reasoning_model',
+           'toggle_reasoning', 'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal',
+           'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'tailwind_css', 'index',
+           'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
+           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
+           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
+           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/01_cells.ipynb #67249157
-import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio
+import os, shutil, subprocess, sys, threading, time, json, base64, io as _pyio, re
 from pathlib import Path
 from fastcore.utils import *
 from fasthtml.common import *
@@ -34,6 +35,7 @@ import nbformat as _nbf
 from lisette import *
 from .llms import *  # get_tool_list, get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
 from .llms import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llms.py's __all__, so import * won't bring them in
+from .plugins import *  # PLUGINS/start_plugins/Plugin -- a leaf module (imports only external libs, never this one), so no circular import; see nbs/04_plugins.ipynb
 
 
 # %% ../nbs/01_cells.ipynb #c7250022
@@ -280,10 +282,17 @@ class Notebook:
         "Start a fresh, empty, untitled notebook."
         self.cells, self._nid, self.compose_type, self.selected = [], 0, 'code', None
         self.name = 'untitled'
-        self.models, self.model = [], None  # available LLMs + the one currently selected in the top bar
+        self.models = []  # every locally-available LLM (info dicts, see get_model_list())
+        self.standard_model, self.reasoning_model = None, None  # 'id' strings (see get_ollama_list()) picked in the brain-icon menu's two dropdowns
+        self.use_reasoning = False  # brain-icon toggle -- which of the two above actually answers Prompt cells; see active_model()
+        self.reasoning_effort = 'm'  # 'l'/'m'/'h' -- only applies while use_reasoning is on; passed through as Chat(...)(think=...), see stream_llm_reply()
         self.clipboard = []  # cell snapshots (plain dicts, not live Cells) for cut/copy/paste
         self.tools = []  # functions the LLM may call on Prompt-cell runs -- see add_tool()
         self.tool_selection = dict(DEFAULT_TOOL_SELECTION)  # which tool sources are active -- toggled by the wrench-icon Tools menu; see get_tool_list()
+
+    def active_model(self) -> str|None:
+        "The model 'id' actually in play for Prompt-cell answers: reasoning_model if the brain-icon toggle is on and one's selected, else standard_model."
+        return self.reasoning_model if (self.use_reasoning and self.reasoning_model) else self.standard_model
 
     def insert_at(self, pos:int, ctype:str, source:str, output:Any=None, visible:bool=True,
                   model:str|None=None, nb_id:str|None=None, export:bool=False, details:str|None=None) -> Cell:
@@ -395,10 +404,10 @@ BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was
 # %% ../nbs/01_cells.ipynb #104800db
 _prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming a reply, if any -- parallel to _run_state (code), not shared with it: a code cell and a prompt reply use different resources and can run at the same time.
 
-def _run_prompt_bg(context:str, model:str, tools:list, state:_RunState) -> None:
-    "Runs in a background thread: drives llms.stream_llm_reply() (which owns the actual model-calling strategy, including how tools are exposed -- see there) into state.buffer/state.blocks. This function's only job is the background-thread/UI-state plumbing shared with code-cell streaming; it has no LLM-specific logic of its own."
+def _run_prompt_bg(context:str, model:str, tools:list, think:str|None, state:_RunState) -> None:
+    "Runs in a background thread: drives llms.stream_llm_reply() (which owns the actual model-calling strategy, including how tools are exposed and reasoning effort is applied -- see there) into state.buffer/state.blocks. This function's only job is the background-thread/UI-state plumbing shared with code-cell streaming; it has no LLM-specific logic of its own."
     try:
-        for item in stream_llm_reply(context, model, tools):
+        for item in stream_llm_reply(context, model, tools, think):
             if item[0] == 'final':
                 _, content, details = item
                 state.blocks = (content, details)
@@ -412,14 +421,16 @@ def _run_prompt_bg(context:str, model:str, tools:list, state:_RunState) -> None:
     state.done = True
 
 def _start_prompt_run(prompt_id:int) -> None:
-    "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make)."
+    "Kick off the LLM call for `prompt_id`, streaming into _prompt_state -- in a background thread if a real model is configured, or resolved immediately via stub_reply() if not (no need for a thread when there's no real call to make). Uses nb.active_model() (standard or reasoning, per the brain-icon toggle) and, while reasoning is active, nb.reasoning_effort."
     global _prompt_state
     c = nb.get(prompt_id)
     state = _RunState(prompt_id)
-    if nb.model:
+    model = nb.active_model()
+    if model:
         tools = get_tool_list(nb.tool_selection) + nb.tools
         _push_tools()  # keep the shell namespace in sync before the model can suggest calling any of these
-        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), nb.model, tools, state), daemon=True)
+        think = nb.reasoning_effort if nb.use_reasoning else None
+        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), model, tools, think, state), daemon=True)
         _prompt_state = state
         state.thread.start()
     else:
@@ -445,10 +456,10 @@ def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell
     i = nb.index(c.id)
     nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
     if nxt is not None and nxt.ctype == 'assistant':
-        nxt.source, nxt.model, nxt.details = content, nb.model, details
+        nxt.source, nxt.model, nxt.details = content, nb.active_model(), details
         nxt.ts = datetime.now().strftime('%I:%M:%S %p')
     else:
-        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.model, details=details)
+        nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
     return nxt
 
 @rt
@@ -505,13 +516,15 @@ def stub_reply(nb:Notebook, prompt:str) -> str:
 
 # %% ../nbs/01_cells.ipynb #db01327f
 def ensure_models() -> None:
-    "Populate nb.models/nb.model once at startup, tolerating an unreachable local LLM server."
+    "Populate nb.models (info dicts, see get_model_list()) plus default picks for the standard and reasoning models, tolerating an unreachable local LLM server. The reasoning default is whichever model first advertises Ollama's 'thinking' capability, if any -- see brain_menu()."
     try:
         nb.models = get_model_list()
     except Exception:
         nb.models = []
-    preferred = next((m for m in nb.models if _PREFERRED_MODEL_SUBSTR in m), None)
-    nb.model = preferred or (nb.models[0] if nb.models else None)
+    preferred = next((m for m in nb.models if _PREFERRED_MODEL_SUBSTR in m['id']), None)
+    nb.standard_model = preferred['id'] if preferred else (nb.models[0]['id'] if nb.models else None)
+    reasoning = next((m for m in nb.models if 'thinking' in m.get('capabilities', [])), None)
+    nb.reasoning_model = reasoning['id'] if reasoning else None
 
 # %% ../nbs/01_cells.ipynb #3014974b
 try:
@@ -519,6 +532,7 @@ try:
     def _load_models() -> None:
         "Fetch the local model list once, when the real server actually starts up."
         ensure_models()
+        start_plugins()  # spawn each registered plugin's background task (e.g. SystemMonitor's sampler) -- only on a real boot, never during import/tests
 except:
     print("WARNING: Can't test this cell in notebook, no app")
 
@@ -552,20 +566,27 @@ ICONS = {
     'document-text': ('M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',),
     'question-mark-circle': ('M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z',),
     'wrench-screwdriver': ('M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z',),
+    # lucide-static (ISC license) brain.svg -- heroicons has no literal brain icon; kept in the same plain-'d'-tuple, stroke='currentColor' style as the rest of ICONS. Every path gets the same 0.85 scale (see Icon()'s (d,scale) handling) because lucide's glyph fills ~83% of its 24x24 box vs ~75-81% for our heroicons (all centered at (12,12) like this one is) -- left at 1.0 it visually reads heavier/bigger than its neighbors despite an identical button box.
+    'brain': (('M12 18V5', .85), ('M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4', .85), ('M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5', .85),
+              ('M17.997 5.125a4 4 0 0 1 2.526 5.77', .85), ('M18 18a4 4 0 0 0 2-7.464', .85), ('M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517', .85),
+              ('M6 18a4 4 0 0 1-2-7.464', .85), ('M6.003 5.125a4 4 0 0 0-2.526 5.77', .85)),
 }  # heroicon name -> tuple of SVG path 'd' attributes
 
 
 # %% ../nbs/01_cells.ipynb #df3d9ee3
-def Icon(name:str, cls:str='size-4') -> FT:
-    "A heroicons outline SVG, inlined so `stroke='currentColor'` matches the button's text color. Each path in ICONS[name] is either a plain 'd' string, or an (d, scale) pair -- the latter renders that sub-path inside its own group, scaled about the 24x24 viewBox center, so it can be enlarged independently of the rest of the icon (e.g. x-circle's X, play-circle's triangle)."
+def _svg_icon(paths, cls:str='size-4') -> FT:
+    "Render a tuple of ICONS-style path data (plain 'd' strings and/or (d, scale) pairs) as an inlined outline SVG with stroke='currentColor'. An (d, scale) pair renders that sub-path in its own group, scaled about the 24x24 viewBox center, so it can be enlarged independently of the rest (e.g. x-circle's X). Shared by Icon() (built-in ICONS) and plugin icons (see plugins.py / _plugin_button), so a plugin's SVG renders identically to a built-in one."
     def render(item):
         d, scale = item if isinstance(item, tuple) else (item, 1)
         p = SvgPath(stroke_linecap='round', stroke_linejoin='round', d=d)
         return SvgG(p, transform=f'translate(12,12) scale({scale}) translate(-12,-12)') if scale != 1 else p
-    return fh.Svg(*[render(item) for item in ICONS[name]],
+    return fh.Svg(*[render(item) for item in paths],
                   xmlns='http://www.w3.org/2000/svg', fill='none', viewbox='0 0 24 24',
                   stroke_width='1.5', stroke='currentColor', cls=cls)
 
+def Icon(name:str, cls:str='size-4') -> FT:
+    "A heroicons outline SVG by name (see ICONS), inlined so `stroke='currentColor'` matches the button's text color. Thin wrapper over _svg_icon()."
+    return _svg_icon(ICONS[name], cls)
 
 # %% ../nbs/01_cells.ipynb #d37bf5b4
 def IconBtn(name:str, title:str, **kw) -> FT:
@@ -911,25 +932,98 @@ def rename_form() -> FT:
                 id='fname', hx_post=rename, hx_target='#fname', hx_swap='outerHTML')
 
 # %% ../nbs/01_cells.ipynb #6560e13e
-def model_dropdown() -> FT:
-    "Select which LLM answers Prompt cells; selection lives on `nb.model`."
-    if not nb.models:
-        return Span('no models', cls='text-xs opacity-50 tooltip tooltip-bottom', data_tip='No local LLMs found (is Ollama running?)')
-    opts = [fh.Option(m, value=m, selected=(m == nb.model)) for m in nb.models]
-    return fh.Select(*opts, name='model', cls='select select-sm select-bordered',
-                      hx_post=set_model, hx_trigger='change', hx_swap='none')
+_CAPABILITY_EMOJI = {'vision': '\U0001F441\uFE0F', 'tools': '\U0001F527', 'thinking': '\U0001F9E0'}  # capability (from get_ollama_list()'s 'capabilities') -> emoji shown after a model's name in dropdowns; capabilities we don't care about (completion -- basically universal, insert, embedding, ...) are silently ignored, and a model with none of these three gets no emoji at all
+
+def _model_label(m:dict) -> str:
+    "A model's dropdown label: its bare name, plus a trailing run of capability emojis (see _CAPABILITY_EMOJI) if it has any worth flagging."
+    emoji = ''.join(_CAPABILITY_EMOJI[c] for c in m.get('capabilities', []) if c in _CAPABILITY_EMOJI)
+    return f"{m['model']}  {emoji}" if emoji else m['model']
+
+def _model_select(models:list[dict], active_id:str|None, route) -> FT:
+    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
+    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
+    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
+                      hx_post=route, hx_trigger='change', hx_swap='none')
+
+def _dropdown_width_px(models:list[dict]) -> int:
+    "Estimate a comfortable width (px) for brain_menu()'s popup from the longest model label (name + capability emojis) among `models` -- a fixed width clipped the select boxes whenever a name+emoji combo ran longer than expected. ~9px/char is a rough per-character width at this font size; the +60 covers the select's own padding/border/dropdown-arrow chrome. Clamped to a sane range either way."
+    longest = max((len(_model_label(m)) for m in models), default=20)
+    return max(260, min(480, 60 + longest * 9))
+
+_EFFORT_LEVELS = ('l', 'm', 'h')
+
+def brain_menu(icon_cls:str) -> FT:
+    "Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu."
+    reasoning_models = [m for m in nb.models if 'thinking' in m.get('capabilities', [])]
+    # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
+    # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
+    rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            Div('Standard model', cls='text-sm'),
+            _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
+            Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
+            _model_select(reasoning_models, nb.reasoning_model, set_reasoning_model) if reasoning_models else Span('none available', cls='text-xs opacity-50')]
+    if reasoning_models:
+        rows.append(Div(
+            Span('Effort', cls='text-xs font-semibold mr-2'),
+            *[Label(Input(type='radio', name='effort', checked=(nb.reasoning_effort == lvl), cls='radio radio-xs',
+                          hx_post=set_reasoning_effort.to(effort=lvl), hx_swap='none'),
+                    Span(lvl.upper(), cls='text-xs ml-1'), cls='flex items-center gap-1 mr-3 cursor-pointer')
+              for lvl in _EFFORT_LEVELS],
+            cls='flex items-center mt-2'))
+    brain_cls = 'btn btn-ghost btn-circle btn-sm' + (' text-cyan-400' if nb.use_reasoning else '')
+    width_px = _dropdown_width_px(nb.models)
+    return Div(
+        fh.Button(Icon('brain', cls=icon_cls), cls=brain_cls,
+                  hx_post=toggle_reasoning, hx_target='#brain-menu', hx_swap='outerHTML'),
+        # width is estimated from the longest model label (see _dropdown_width_px) rather than
+        # fixed, so a long name+emoji combo doesn't overflow its select box. DaisyUI's dropdown
+        # only offers left- or right-anchored positioning (dropdown-end), neither of which centers
+        # on the trigger -- `left:50%; transform:translateX(-50%)` is the standard CSS centering
+        # trick, overriding daisyUI's own left/right via higher-specificity inline style.
+        Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
+           style='left:50%; transform:translateX(-50%);',
+           cls=f'dropdown-content menu bg-base-200 rounded-box z-10 w-[{width_px}px] p-1 shadow'),
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
 
 
 # %% ../nbs/01_cells.ipynb #7f7b8257
+def _apply_active_model(prev_active:str|None) -> None:
+    "After changing standard_model/reasoning_model/use_reasoning, stop whichever Ollama model was previously active (see nb.active_model()) if the switch actually changed it -- frees its VRAM, same as the old single-model set_model() used to do."
+    new_active = nb.active_model()
+    if prev_active and prev_active != new_active and prev_active.startswith('ollama/'):
+        try: subprocess.run(['ollama', 'stop', prev_active.removeprefix('ollama/')], capture_output=True, timeout=5)
+        except Exception: pass
+
 @rt
-def set_model(model:str) -> str:
-    "Switch the active Prompt-answering model, stopping the previous Ollama model to free its VRAM."
-    if model in nb.models and model != nb.model:
-        old, nb.model = nb.model, model
-        if old and old.startswith('ollama/'):
-            import subprocess
-            try: subprocess.run(['ollama', 'stop', old.removeprefix('ollama/')], capture_output=True, timeout=5)
-            except Exception: pass
+def set_standard_model(model:str) -> str:
+    "Change the Standard-model pick in the brain menu. Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
+    if any(m['id'] == model for m in nb.models) and model != nb.standard_model:
+        prev_active = nb.active_model()
+        nb.standard_model = model
+        _apply_active_model(prev_active)
+    return ''
+
+@rt
+def set_reasoning_model(model:str) -> str:
+    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
+    if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
+        prev_active = nb.active_model()
+        nb.reasoning_model = model
+        _apply_active_model(prev_active)
+    return ''
+
+@rt
+def toggle_reasoning() -> FT:
+    "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
+    prev_active = nb.active_model()
+    nb.use_reasoning = not nb.use_reasoning
+    _apply_active_model(prev_active)
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+@rt
+def set_reasoning_effort(effort:str) -> str:
+    "Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply)."
+    nb.reasoning_effort = effort
     return ''
 
 # %% ../nbs/01_cells.ipynb #9977fc97
@@ -1025,40 +1119,90 @@ def tools_menu(icon_cls:str) -> FT:
         for key, label in _TOOL_SOURCE_LABELS.items()
     ]
     return Div(
-        fh.Button(Icon('wrench-screwdriver', cls=icon_cls), data_tip='Tool selection', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom'),
+        # inline-flex items-center justify-center: DaisyUI's .tooltip class overrides .btn's own
+        # display:inline-flex (to display:inline-block), which silently breaks the icon's flexbox
+        # centering inside the circle -- re-asserting it here (Tailwind's utility layer beats
+        # DaisyUI's component layer) is what actually keeps the icon centered, not left-shifted.
+        fh.Button(Icon('wrench-screwdriver', cls=icon_cls), data_tip='Tool selection',
+                  cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center'),
         Ul(Li(Div('Tools', cls='menu-title')), *rows, tabindex='0', cls='dropdown-content menu bg-base-200 rounded-box z-10 w-36 p-1 shadow'),
         cls='dropdown dropdown-hover dropdown-bottom')
 
 
+# %% ../nbs/01_cells.ipynb #05cd1f65
+def _plugin_slug(name:str) -> str:
+    "A plugin name as a DOM-id-safe slug, e.g. 'System monitor' -> 'system-monitor'."
+    return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+def _plugin_panel(name:str) -> FT:
+    "Self-polling wrapper around the named plugin's render(): re-fetches itself (outerHTML, carrying its own hx-trigger along so polling continues) roughly every 2s, but the JS trigger filter only actually issues that request while the mouse is over the plugin's dropdown -- so the panel is inert (no requests) until hovered, and stops again the moment you mouse away. Mirrors the _run_output_div/run_code_poll self-polling idiom already used for streaming code/prompt cells. Keyed by name (not list index) -- fastcore's qp() treats 0 as falsy (0 in (False,None) is True in Python) and silently drops an idx=0 query param, so an int index is a trap for the first-registered plugin."
+    pl = next(p for p in PLUGINS if p.name == name)
+    dom_id = f'plugin-panel-{_plugin_slug(name)}'
+    return Div(pl.render(), id=dom_id,
+               hx_get=plugin_panel_poll.to(name=name), hx_target=f'#{dom_id}', hx_swap='outerHTML',
+               hx_trigger="every 2s [this.closest('.dropdown').matches(':hover')]")
+
+@rt
+def plugin_panel_poll(name:str) -> FT:
+    "Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open."
+    return _plugin_panel(name)
+
+def _plugin_button(pl:Plugin) -> FT:
+    "The top-bar button for a registered plugin. For trigger=='hover' (the only kind wired up so far), same pure-CSS dropdown-hover shell as tools_menu()/brain_menu() for showing/hiding the panel, but the panel content itself is the self-polling _plugin_panel() so it keeps refreshing (e.g. sparklines scrolling) for as long as it's actually visible. `left:50%; transform:translateX(-50%)` centers the popup on the button (see brain_menu()'s identical trick) rather than right-anchoring it with dropdown-end, which breaks down in a narrow browser window."
+    icon = fh.Button(_svg_icon(pl.icon, cls=_TOPBAR_ICON_CLS_LG), data_tip=pl.name,
+                     cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center')
+    return Div(icon, Ul(Li(_plugin_panel(pl.name)), tabindex='0', style='left:50%; transform:translateX(-50%);',
+                        cls='dropdown-content menu bg-base-200 rounded-box z-10 shadow'),
+               cls='dropdown dropdown-hover dropdown-bottom')
+
 # %% ../nbs/01_cells.ipynb #8392ed2d
+# 19px landed between size-4 (16px, too small next to the moon/sun) and size-5 (20px, ended up
+# looking bigger than the moon/sun -- these are stroked outline icons vs. theme_swap()'s filled
+# ones, so the same box reads heavier); 18px still read as closer to the smaller end. Shared as a
+# constant (not just a local in top_bar()) so toggle_reasoning() can re-render brain_menu() at the
+# same size when it refreshes itself out-of-band.
+_TOPBAR_ICON_CLS = 'size-[19px]'
+_TOPBAR_ICON_CLS_LG = 'size-[21px]'  # ~10% bigger than _TOPBAR_ICON_CLS -- plugin icons/brain/help/interrupt/restart-kernel read a touch small next to their neighbors at 19px
+
 def top_bar() -> FT:
-    "The whole navbar: file menu + logo + filename on the left, model picker + kernel/theme controls on the right."
+    "The whole navbar: file menu + logo + filename on the left, model pickers + kernel/theme controls on the right."
     brand = Div(file_menu(), Img(src='/logo.png', cls='h-8 w-8 rounded-full'),
                 Span('boopiter', cls='font-bold text-lg'),
                 Span('/', cls='opacity-40'), fname_display(),
                 cls='flex items-center gap-2')
-    # 19px landed between size-4 (16px, too small next to the moon/sun) and size-5 (20px, ended up
-    # looking bigger than the moon/sun -- these are stroked outline icons vs. theme_swap()'s filled
-    # ones, so the same box reads heavier); 18px still read as closer to the smaller end.
-    icon_cls = 'size-[19px]'
-    # No flex-wrap on this inner group -- these six stay together as one atomic unit when the
-    # outer ctrls row wraps, instead of the model dropdown "stealing" just the first icon's worth
-    # of leftover space on its own line and orphaning it from its siblings.
+    icon_cls = _TOPBAR_ICON_CLS
+    # No flex-wrap on this inner group -- these seven stay together as one atomic unit when the
+    # outer ctrls row wraps, instead of a menu "stealing" just the first icon's worth of leftover
+    # space on its own line and orphaning it from its siblings.
+    # inline-flex items-center justify-center on every tooltip'd button: DaisyUI's .tooltip class
+    # overrides .btn's own display:inline-flex (to block/inline-block), which silently breaks the
+    # icon's flexbox centering inside the circle, left-shifting it -- re-asserting flex centering
+    # here (Tailwind's utility layer beats DaisyUI's component layer) is the actual fix, not icon
+    # size or spacing (brain_menu()'s button looked "different" only because it has no tooltip).
+    tt_cls = 'btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom inline-flex items-center justify-center'
     icon_btns = Div(
+        # Registered plugins (see plugins.py), reversed so the first-registered one sits nearest
+        # the Tools icon and later ones stack further left.
+        *[_plugin_button(pl) for pl in reversed(PLUGINS)],
         tools_menu(icon_cls),
-        fh.Button(Icon('question-mark-circle', cls=icon_cls), data_tip='Keyboard shortcuts', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
+        brain_menu(_TOPBAR_ICON_CLS_LG),
+        fh.Button(Icon('question-mark-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Keyboard shortcuts', cls=tt_cls,
                   onclick="document.getElementById('help-modal').showModal()"),
-        fh.Button(Icon('x-circle', cls=icon_cls), data_tip='Interrupt kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
+        fh.Button(Icon('x-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Interrupt kernel', cls=tt_cls,
                   hx_post=interrupt_kernel, hx_swap='none'),
-        fh.Button(Icon('arrow-path', cls=icon_cls), data_tip='Restart kernel', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
+        fh.Button(Icon('arrow-path', cls=_TOPBAR_ICON_CLS_LG), data_tip='Restart kernel', cls=tt_cls,
                   hx_post=restart_kernel, hx_swap='none'),
-        fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls='btn btn-ghost btn-circle btn-sm tooltip tooltip-bottom',
+        fh.Button(Icon('play-circle', cls=icon_cls), data_tip='Run all code cells', cls=tt_cls,
                   hx_post=run_all, hx_target='#notebook', hx_swap='outerHTML'),
         theme_swap(), cls='flex items-center gap-1 shrink-0')
     # flex-wrap by default (so brand/ctrls stack on genuinely narrow/mobile viewports -- see the
     # mobile-layout fix earlier), but md:flex-nowrap forces a single row at tablet width and up, so
     # adding one more icon button doesn't tip ordinary desktop widths into wrapping unnecessarily.
-    ctrls = Div(model_dropdown(), icon_btns, cls='flex items-center gap-1 flex-wrap md:flex-nowrap justify-end')
+    # ml-auto (not just the parent navbar's justify-between) is what actually keeps ctrls pinned to
+    # the right once it wraps onto its own line -- justify-between only spaces multiple items *on
+    # the same line* apart; once brand/ctrls each get a line to themselves, justify-between has
+    # nothing to space ctrls apart from, so it silently collapses to flex-start (left) without this.
+    ctrls = Div(icon_btns, cls='flex items-center gap-1 flex-wrap md:flex-nowrap justify-end ml-auto')
     return Div(brand, ctrls, file_browser_modal(), help_modal(), context_menu(),
                cls='navbar bg-base-200 shadow px-4 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-1 shrink-0')
 
