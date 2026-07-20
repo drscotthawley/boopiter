@@ -1002,10 +1002,16 @@ def _model_label(m:dict) -> str:
 
 # %% ../nbs/01_cells.ipynb #80b17b22
 def _model_select(models:list[dict], active_id:str|None, route) -> FT:
-    "A <select> of `models`, posting to `route` on change -- shared by the Standard/Reasoning pickers in brain_menu()."
-    opts = [fh.Option(_model_label(m), value=m['id'], selected=(m['id'] == active_id)) for m in models]
-    return fh.Select(*opts, name='model', cls='select select-sm select-bordered w-full',
-                      hx_post=route, hx_trigger='change', hx_swap='none')
+    "An inline, DOM-contained list of `models` as clickable rows -- NOT a native <select>, whose option list the browser renders as OS chrome *outside* the page DOM, which breaks brain_menu()'s hover/focus-within visibility the moment the pointer moves onto it (the whole menu vanishes before you can pick anything). Clicking a row posts the chosen model id to `route`, which re-renders the whole brain menu (hx_target=#brain-menu) so the new pick's checkmark shows. Shared by the Standard/Reasoning pickers."
+    rows = []
+    for m in models:
+        active = (m['id'] == active_id)
+        rows.append(fh.Li(fh.A(
+            Span('✓' if active else '', cls='inline-block w-3 text-cyan-400'),
+            Span(_model_label(m)),
+            hx_post=route.to(model=m['id']), hx_target='#brain-menu', hx_swap='outerHTML',
+            cls='flex items-center gap-1 py-0.5' + (' font-semibold' if active else ''))))
+    return fh.Ul(*rows, cls='menu menu-sm p-0 gap-0 w-full max-h-64 overflow-y-auto flex-nowrap')
 
 # %% ../nbs/01_cells.ipynb #9e3ec772
 def _dropdown_width_px(models:list[dict]) -> int:
@@ -1063,23 +1069,23 @@ def _apply_active_model(prev_active:str|None) -> None:
 
 # %% ../nbs/01_cells.ipynb #bc2d594c
 @rt
-def set_standard_model(model:str) -> str:
-    "Change the Standard-model pick in the brain menu. Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
+def set_standard_model(model:str) -> FT:
+    "Change the Standard-model pick in the brain menu, then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
     if any(m['id'] == model for m in nb.models) and model != nb.standard_model:
         prev_active = nb.active_model()
         nb.standard_model = model
         _apply_active_model(prev_active)
-    return ''
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
 
 # %% ../nbs/01_cells.ipynb #ee97c857
 @rt
-def set_reasoning_model(model:str) -> str:
-    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
+def set_reasoning_model(model:str) -> FT:
+    "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models), then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
     if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
         prev_active = nb.active_model()
         nb.reasoning_model = model
         _apply_active_model(prev_active)
-    return ''
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
 
 # %% ../nbs/01_cells.ipynb #cee2215a
 @rt

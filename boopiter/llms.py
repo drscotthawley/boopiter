@@ -9,7 +9,7 @@ __all__ = ['DEFAULT_TOOL_SELECTION', 'get_tool_list', 'get_ollama_list', 'get_mo
            'stream_llm_reply']
 
 # %% ../nbs/02_llms.ipynb #5ea1e09b
-import inspect
+import inspect, time
 from fastcore.utils import *
 from lisette import *
 
@@ -21,6 +21,7 @@ from lisette import *
 import slmn.nbtools as _slmn_nbtools
 import slmn.misc as _slmn_misc
 import slmn.remote as _slmn_remote
+import slmn.dead_drop as _dd
 
 # slmn.remote also has remote_launch/remote_status/remote_smoke_test, which can run arbitrary
 # commands on a remote host over ssh -- a much bigger capability than the rest of slmn's tools.
@@ -58,7 +59,8 @@ def get_ollama_list() -> list[dict]:
 # %% ../nbs/02_llms.ipynb #a2b64307
 def get_model_list() -> list[dict]:
     "Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources."
-    return get_ollama_list()  # TODO: add more model source, e.g. cloud, fileio
+    deaddrop = [{'id': 'deaddrop/claude', 'model': 'claude', 'capabilities': ['vision', 'thinking']}]
+    return get_ollama_list() + deaddrop  # TODO: add more model source, e.g. cloud, fileio
 
 # %% ../nbs/02_llms.ipynb #b7fdcd9f
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
@@ -124,8 +126,32 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|
     msg = contents(response)
     return msg.content, _reply_details_html(response, msg)
 
+_DEADDROP_DIR = Path.home() / 'dead_drop'  # prompts/ and responses/ subdirs -- see slmn.dead_drop
+
+def _deaddrop_stream_reply(context:str, poll_interval:float=1.0):
+    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); everything before it becomes the final reply. No details_html -- there's no API response object to summarize."
+    path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context)
+    resp_path = _DEADDROP_DIR / 'responses' / Path(path).name
+    seen = 0
+    while True:
+        if resp_path.exists():
+            text = resp_path.read_text()
+            stripped = text.rstrip()
+            if stripped.endswith('---DONE---'):
+                content = stripped[:-len('---DONE---')].rstrip()
+                if len(content) > seen: yield ('delta', content[seen:])
+                yield ('final', content, None)
+                return
+            if len(text) > seen:
+                yield ('delta', text[seen:])
+                seen = len(text)
+        time.sleep(poll_interval)
+
 def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None):
-    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm()."
+    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered."
+    if model.startswith('deaddrop/'):
+        yield from _deaddrop_stream_reply(context)
+        return
     chat = Chat(model, sp=tools_system_prompt(tools), tools=[], callkw={'_skip_mcp_handler': True})
     for chunk in chat(context, stream=True, think=think):
         if hasattr(chunk.choices[0], 'message'):  # the final item -- a full ModelResponse, not a delta
