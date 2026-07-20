@@ -9,7 +9,7 @@ __all__ = ['DEFAULT_TOOL_SELECTION', 'get_tool_list', 'get_ollama_list', 'get_mo
            'stream_llm_reply']
 
 # %% ../nbs/02_llms.ipynb #5ea1e09b
-import inspect, time
+import inspect, re, time
 from fastcore.utils import *
 from lisette import *
 
@@ -128,12 +128,18 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|
 
 _DEADDROP_DIR = Path.home() / 'dead_drop'  # prompts/ and responses/ subdirs -- see slmn.dead_drop
 
+_DEADDROP_MODEL_INSTRUCTION = (
+    "\n\n[system: immediately before the final '---DONE---' line, on its own line, include exactly "
+    "one line in this format -- ---MODEL: <your model name and version>--- -- e.g. "
+    "---MODEL: Claude Opus 4.8---. This identifies which model actually answered; it is parsed "
+    "out and shown separately, not part of the visible reply.]"
+)
+_DEADDROP_MODEL_RE = re.compile(r'\n?---MODEL:\s*(.+?)\s*---\s*$')
+
 def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
-    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); everything before it becomes the final reply. There's no API response object to summarize, so details_html is just a minimal <details> block naming `model` -- kept in the same collapsible spot as `_reply_details_html`'s real metadata, for header uniformity with the Ollama path (see cell_header() in cells.py)."
-    path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context)
+    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` (plus `_DEADDROP_MODEL_INSTRUCTION`, asking the responder to self-identify) as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); the '---MODEL: ...---' line just before it (see _DEADDROP_MODEL_RE) is parsed out and used in details_html instead of the generic 'deaddrop/claude' -- everything else before it becomes the final reply. Falls back to `model` if the responder didn't include the line (e.g. an older/manual reply)."
+    path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context + _DEADDROP_MODEL_INSTRUCTION)
     resp_path = _DEADDROP_DIR / 'responses' / Path(path).name
-    details_html = (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
-                     f'<ul><li>Model: {model}</li></ul></details>')
     seen = 0
     while True:
         if resp_path.exists():
@@ -141,7 +147,12 @@ def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
             stripped = text.rstrip()
             if stripped.endswith('---DONE---'):
                 content = stripped[:-len('---DONE---')].rstrip()
+                m = _DEADDROP_MODEL_RE.search(content)
+                responder_model = (m.group(1) if m else model) + ' (dead drop)'
+                if m: content = content[:m.start()].rstrip()
                 if len(content) > seen: yield ('delta', content[seen:])
+                details_html = (f'<details class="text-gray-400" onclick="event.stopPropagation()"><summary>Reply details</summary>'
+                                 f'<ul><li>Model: {responder_model}</li></ul></details>')
                 yield ('final', content, details_html)
                 return
             if len(text) > seen:
