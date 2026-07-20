@@ -10,8 +10,12 @@ project:
 
 format:
   html:
-    theme: [cosmo, booptheme.scss]
-    highlight-style: dracula
+    theme:
+      dark: [cosmo, booptheme.scss]
+      light: cosmo
+    highlight-style:
+      light: arrow
+      dark: dracula
     css: styles.css
     toc: true
     keep-md: true
