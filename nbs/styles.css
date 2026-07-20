@@ -59,3 +59,16 @@ div.description {
 .quarto-color-scheme-toggle .boop-moon { display: none; }
 .quarto-color-scheme-toggle.alternate .boop-sun { display: none; }
 .quarto-color-scheme-toggle.alternate .boop-moon { display: inline-block; }
+
+/* Cell type color-coding, echoing boopiter's colored left bars. The docsprocs.color_cells
+   processor (doc_procs) wraps each markdown/raw cell in .boopcell + a type class; code cells
+   already have .cell-code. Colors are DaisyUI dark's semantic tokens, matching BORDER in cells.py:
+   note=success, prompt=error, raw=warning, code=info. */
+.boopcell { border-left: 4px solid transparent; padding-left: 0.75rem; }
+.boop-note   { border-left-color: #00d390; }  /* success -- markdown notes  */
+.boop-prompt { border-left-color: #ff627d; }  /* error   -- prompt cells    */
+.boop-raw    { border-left-color: #fcb700; }  /* warning -- raw cells       */
+div.sourceCode.cell-code { border-left: 4px solid #00bafe; }  /* info -- code cells */
+/* Indent the LLM reply within a prompt cell, echoing boopiter's `ml-8` on assistant cells.
+   The reply is the `##### 🤖Reply🤖` section (h5 -> .level5, id starts "reply"). */
+.boop-prompt section[id^="reply"] { margin-left: 2rem; }

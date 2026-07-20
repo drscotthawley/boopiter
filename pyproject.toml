@@ -56,3 +56,6 @@ boopiter = "boopiter.core:launch"
 # cells for solveit interop and register it here so nbdev-clean preserves it -- but losing it would
 # not break boopiter's own loading. See nbs/04_serialize.ipynb.
 allowed_cell_metadata_keys = ["solveit_ai"]
+# Docs-build processor: color-code rendered cells by boopiter type (green note / red prompt /
+# orange raw; code via CSS). Runs over every notebook before Quarto renders. See boopiter/docsprocs.py.
+doc_procs = ["boopiter.docsprocs:color_cells"]
