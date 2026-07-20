@@ -19,7 +19,7 @@
 
 <div class="boopcell boop-note">
 
-This is a vibe-coded clone of and homage to the amazing [solveit](https://solve.it.com/) GUI, intended primarily for education purposes: learning the basic operations so that I can easily work with local execution and develop my own extensions and features as my research work expands.
+This is a vibe-coded clone of and homage to the amazing [solveit](https://solve.it.com/) system. `boopiter` is intended primarily for education purposes: learning the basic operations so that I can easily work with local execution and develop my own extensions and features as my research work expands.
 
 </div>
 
