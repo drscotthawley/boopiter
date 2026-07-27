@@ -59,9 +59,12 @@ def get_ollama_list() -> list[dict]:
 
 # %% ../nbs/01_llms.ipynb #a2b64307
 def get_model_list() -> list[dict]:
-    "Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources."
+    "Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources. Live dead-drop sessions (see _deaddrop_sessions) are listed as models too, one 'deaddrop/<session-id>' entry each: selecting one in the brain-menu dropdown is what binds this notebook's Prompt cells to that session's inbox/outbox. Modelling the binding as a model choice -- rather than as a global set once per process -- means it's visible in the UI, saved with the notebook, and per-notebook, so several notebooks on different topics can each talk to their own session without crossing wires, and a restart can't silently reroute one of them. 'deaddrop/claude' remains the original single-file prompts/ + responses/ route."
     deaddrop = [{'id': 'deaddrop/claude', 'model': 'claude', 'capabilities': ['vision', 'thinking']}]
+    deaddrop += [{'id': f'deaddrop/{s}', 'model': s, 'capabilities': ['vision', 'thinking']}
+                 for s in _deaddrop_sessions()]
     return get_ollama_list() + deaddrop  # TODO: add more model source, e.g. cloud, fileio
+
 
 # %% ../nbs/01_llms.ipynb #b7fdcd9f
 # lisette + local (Ollama) models: passing non-empty `tools=` combined with `tool_choice='none'`
@@ -133,7 +136,26 @@ def prompt_llm(context:str, model:str='ollama/qwen2.5-coder:latest', tools:list|
     msg = contents(response)
     return msg.content, _reply_details_html(response, msg)
 
-_DEADDROP_DIR = Path.home() / 'dead_drop'  # prompts/ and responses/ subdirs -- see slmn.dead_drop
+_DEADDROP_DIR = Path.home() / 'dead_drop'  # holds the legacy prompts/ + responses/ pair, plus one subdirectory per session -- see slmn.dead_drop
+_DEADDROP_SESSION_SUBDIRS = ('inbox', 'outbox')  # a session is a directory holding these two; prompts go in, replies come back out, and nothing is ever moved between them
+_HAS_SESSIONS = hasattr(_dd, 'follow_reply')  # session routing is newer than the single-file exchange; without it, session models simply don't appear and 'deaddrop/claude' still works
+
+def _deaddrop_sessions(dir=None) -> list[str]:
+    "The dead-drop session ids that can currently be prompted into. Thin wrapper over slmn's list_sessions(require=...) -- the `require` filter is what keeps the legacy 'prompts'/'responses' directories, which sit in the same root and are not sessions, from being offered in the model dropdown as something you could address but never get an answer from. Returns [] on an installed slmn predating session routing."
+    if not _HAS_SESSIONS: return []
+    return _dd.list_sessions(str(dir or _DEADDROP_DIR), require=_DEADDROP_SESSION_SUBDIRS)
+
+def _deaddrop_events(chunks, model:str, extra_rows:list=None):
+    "Adapt slmn's plain text-chunk generator (follow_file/follow_reply) to the ('delta', ...) / ('final', ...) contract stream_llm_reply's callers expect. Everything protocol-shaped -- waiting for the file, tailing it as it grows, recognising the end-of-reply marker -- lives in slmn.dead_drop; what's left here is boopiter's own presentation concern: accumulate the chunks, then pull out the '---MODEL: ...---' line the responder was asked to add (see _DEADDROP_MODEL_INSTRUCTION) so the details block can name the model that actually answered rather than the generic 'deaddrop/...', and trim it off the visible reply. That name is untrusted, model-generated text -- a human is relaying whatever the other side typed -- so _details_block escapes it, exactly as on the real-API path."
+    parts = []
+    for chunk in chunks:
+        parts.append(chunk)
+        yield ('delta', chunk)
+    content = ''.join(parts).rstrip()
+    m = _DEADDROP_MODEL_RE.search(content)
+    responder_model = (m.group(1) if m else model) + ' (dead drop)'
+    if m: content = content[:m.start()].rstrip()
+    yield ('final', content, _details_block([('Model', responder_model), *(extra_rows or [])]))
 
 _DEADDROP_MODEL_INSTRUCTION = (
     "\n\n[system: immediately before the final '---DONE---' line, on its own line, include exactly "
@@ -143,28 +165,27 @@ _DEADDROP_MODEL_INSTRUCTION = (
 )
 _DEADDROP_MODEL_RE = re.compile(r'\n?---MODEL:\s*(.+?)\s*---\s*$')
 
-def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
-    "Route a Prompt-cell reply through the dead_drop protocol (github.com/drscotthawley/slmn) instead of a local LLM call: drop `context` (plus `_DEADDROP_MODEL_INSTRUCTION`, asking the responder to self-identify) as a prompt (slmn.dead_drop.drop(), auto-named), then poll the paired response file (same name, under _DEADDROP_DIR/responses) for new content, yielding ('delta', ...) chunks as it grows -- same idea as run_code_poll's streaming, but the 'model' on the other end is a human relaying a real Claude session through files. The responder signals completion with a trailing '---DONE---' line (same sentinel convention as slmn.dead_drop.next_prompt()'s '---SEND---'); the '---MODEL: ...---' line just before it (see _DEADDROP_MODEL_RE) is parsed out and used in details_html instead of the generic 'deaddrop/claude' -- everything else before it becomes the final reply. Falls back to `model` if the responder didn't include the line (e.g. an older/manual reply). The model name is untrusted, model-generated text (a human is literally relaying whatever the other side typed) -- _details_block HTML-escapes it, same as the real-API path."
+def _deaddrop_stream_legacy(context:str, model:str, poll_interval:float=1.0):
+    "The original single-file dead-drop route, used by the 'deaddrop/claude' model and kept for the hand-driven prompts/ + responses/ workflow (session models go through _deaddrop_stream_session instead): drop `context` (plus `_DEADDROP_MODEL_INSTRUCTION`, asking the responder to self-identify) as one auto-named prompt file, then follow the paired response file of the same name under _DEADDROP_DIR/responses. Identical in shape to the session route -- both hand a slmn text-chunk generator to _deaddrop_events -- differing only in where the two files live and in addressing no particular session; the 'model' on the other end is a human relaying a real Claude session through files."
     path = _dd.drop(str(_DEADDROP_DIR / 'prompts'), context + _DEADDROP_MODEL_INSTRUCTION)
     resp_path = _DEADDROP_DIR / 'responses' / Path(path).name
-    seen = 0
-    while True:
-        if resp_path.exists():
-            text = resp_path.read_text()
-            stripped = text.rstrip()
-            if stripped.endswith('---DONE---'):
-                content = stripped[:-len('---DONE---')].rstrip()
-                m = _DEADDROP_MODEL_RE.search(content)
-                responder_model = (m.group(1) if m else model) + ' (dead drop)'
-                if m: content = content[:m.start()].rstrip()
-                if len(content) > seen: yield ('delta', content[seen:])
-                details_html = _details_block([('Model', responder_model)])
-                yield ('final', content, details_html)
-                return
-            if len(text) > seen:
-                yield ('delta', text[seen:])
-                seen = len(text)
-        time.sleep(poll_interval)
+    yield from _deaddrop_events(_dd.follow_file(str(resp_path), poll_interval), model)
+
+def _deaddrop_stream_session(context:str, model:str, session_id:str, poll_interval:float=1.0):
+    "Route a Prompt-cell reply to one specific dead-drop session: drop the prompt as a bundle into that session's inbox/ (slmn's drop_prompt -- a directory written via one atomic rename, so a prompt can carry attachments alongside its text and a watcher never sees it half-written), then follow the reply streaming back out of its outbox/ (slmn's follow_reply). Just the two directories, with nothing ever moved between them: the reply's own '---DONE---' terminator says when it's finished, so there's no claimed/completed bookkeeping to keep in sync -- and unlike a reply delivered as an atomically-renamed bundle, it can be read while it's still being written, which is what lets the answer fill into the cell live."
+    prompt_id = _dd.drop_prompt(str(_DEADDROP_DIR), session_id, {'prompt.md': context + _DEADDROP_MODEL_INSTRUCTION})
+    chunks = _dd.follow_reply(str(_DEADDROP_DIR), session_id, prompt_id, poll_interval)
+    yield from _deaddrop_events(chunks, model, [('Session', session_id), ('Prompt id', prompt_id)])
+
+def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
+    "Dispatch a 'deaddrop/...' model to the right dead-drop route. 'deaddrop/claude' is the original single-file prompts/ + responses/ exchange (_deaddrop_stream_legacy); anything else is read as a session id and addressed through that session's inbox/outbox (_deaddrop_stream_session). Picking the session from the model dropdown is what binds a notebook to it -- see _deaddrop_sessions/get_model_list -- so the binding is visible, per-notebook, and saved with the notebook, rather than living in process-wide state that a restart would silently drop and reroute."
+    session_id = model.split('/', 1)[1] if '/' in model else 'claude'
+    if session_id == 'claude':
+        yield from _deaddrop_stream_legacy(context, model, poll_interval)
+    elif not _HAS_SESSIONS:
+        raise RuntimeError(f"Model {model!r} needs slmn's dead-drop session routing (drop_prompt/follow_reply), which this installed slmn doesn't have. Update slmn, or use 'deaddrop/claude'.")
+    else:
+        yield from _deaddrop_stream_session(context, model, session_id, poll_interval)
 
 def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None):
     "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered."
