@@ -1240,10 +1240,11 @@ def split(source:str, pos:int) -> tuple:
 
 # %% ../nbs/05_cells.ipynb #0e3e3053
 @rt
-def split_cell(id:int, pos:int) -> FT|tuple:
-    "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. Neither half is (re-)executed, and any existing output is cleared -- it was produced by the *whole* original code, so it doesn't correctly belong to either fragment alone (e.g. a plot statement can end up in either half after the split, stranding old output next to code that didn't produce it). Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
+def split_cell(id:int, pos:int, source:str|None=None) -> FT|tuple:
+    "Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. `source` is the editor's live buffer, sent along by boopSplitCell() because `pos` was measured against *it*, not against the server's last-saved copy -- splitting a cell you'd typed into but not yet saved used to slice the stale copy at an offset that indexed the new one. Neither half is (re-)executed, and any existing output is cleared -- it was produced by the *whole* original code, so it doesn't correctly belong to either fragment alone (e.g. a plot statement can end up in either half after the split, stranding old output next to code that didn't produce it). Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line."
     c = nb.get(id)
     if not c: return ''
+    if source is not None: c.source = source  # adopt the live buffer first, so `pos` and the text it was measured in agree
     head, tail = c.source[:pos], c.source[pos:]
     c.source, c.output = head.rstrip('\n'), None
     i = nb.index(c.id)
