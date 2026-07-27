@@ -29,6 +29,17 @@ class Cell:
         self.details = details  # assistant cells only: raw HTML <details> block (model/tokens/reasoning) shown above the reply -- kept OUT of source so it never pollutes llm_context()
         self.ts = datetime.now().strftime('%I:%M:%S %p')
 
+    @property
+    def source(self) -> str:
+        "The cell's text, always stored with plain `\\n` line endings -- see the setter for why that matters."
+        return self._source
+
+    @source.setter
+    def source(self, v:str) -> None:
+        "Normalize CRLF (and lone CR) to `\\n` on the way in -- the *only* place source is ever assigned, so nothing can smuggle a `\\r` into the model. Browsers CRLF-normalize form-submitted `<textarea>` values, so a cell saved through the editor came back with `\\r\\n`; but the caret offsets the client reports (`textarea.selectionStart`, `CodeMirror.indexFromPos`) index the `\\n`-only API value. Storing the CRLF form put the two in different coordinate systems, drifting by one character per line break above the caret -- which silently mis-sliced split_cell(), moving text that belonged above the split down into the new cell (and defeating its `strip('\\n')` boundary trimming, since `\\r\\n` doesn't start with `\\n`)."
+        self._source = v.replace('\r\n','\n').replace('\r','\n') if isinstance(v,str) else v
+
+
 # %% ../nbs/02_notebook.ipynb #39f24354
 class Notebook:
     "The whole in-memory notebook: its cells, selection, clipboard, and app-level UI state."

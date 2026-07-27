@@ -124,10 +124,16 @@ function boopComposerSplit(cm){
     values:{source: cm.getValue(), pos: cm.indexFromPos(cm.getCursor())}})
     .finally(function(){ _boopSplitInFlight.delete('composer'); });
 }
-function boopSplitCell(id, pos){
+// `pos` is only meaningful against the exact text it was measured in, so send that text along --
+// same as boopComposerSplit() above. Sending pos alone made the server slice its own last-saved
+// copy of the cell, which is stale the moment you type anything without saving: the caret offset
+// then points into one string while the split happens in another, dropping text on the wrong side.
+// These values ride as urlencoded params, not a form submission, so they keep their '\n' newlines
+// (a form-submitted <textarea> would CRLF-normalize them -- see the Cell.source setter).
+function boopSplitCell(id, pos, source){
   if(_boopSplitInFlight.has(id)) return;
   _boopSplitInFlight.add(id);
-  htmx.ajax('POST', '/split_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML', values:{pos: pos}})
+  htmx.ajax('POST', '/split_cell?id='+id, {target:'#cell-'+id, swap:'outerHTML', values:{pos: pos, source: source}})
     .finally(function(){ _boopSplitInFlight.delete(id); });
 }
 function boopMakeCM(ta, isComposer){
@@ -140,8 +146,8 @@ function boopMakeCM(ta, isComposer){
     } : {
       'Shift-Enter': function(){ boopSave(id); }, 'Ctrl-Enter': function(){ boopSave(id); }, 'Cmd-Enter': function(){ boopSave(id); },
       'Ctrl-/': function(cm){ cm.toggleComment(); }, 'Cmd-/': function(cm){ cm.toggleComment(); },
-      'Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
-      'Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor())); },
+      'Ctrl--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor()), cm.getValue()); },
+      'Cmd--': function(cm){ boopSplitCell(id, cm.indexFromPos(cm.getCursor()), cm.getValue()); },
       'Esc': function(){ boopCancelEdit(id); }  // code cells only -- the composer keeps its own default Esc behavior (nothing to "cancel" there)
     };
   var cm = CodeMirror.fromTextArea(ta, {
@@ -210,7 +216,7 @@ function boopInitEditors(root){
       ta.addEventListener('keydown', function(e){
         if((e.shiftKey||e.ctrlKey||e.metaKey) && e.key === 'Enter'){ e.preventDefault(); boopSave(ta.getAttribute('data-cid')); }
         else if((e.ctrlKey||e.metaKey) && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
-          e.preventDefault(); boopSplitCell(ta.getAttribute('data-cid'), ta.selectionStart);
+          e.preventDefault(); boopSplitCell(ta.getAttribute('data-cid'), ta.selectionStart, ta.value);
         }
         else if(e.key === 'Escape'){ e.preventDefault(); boopCancelEdit(ta.getAttribute('data-cid')); }
       });
