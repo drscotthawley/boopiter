@@ -181,29 +181,65 @@ function boopInsertAtCursor(ta, text){
   ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
   ta.selectionStart = ta.selectionEnd = s + text.length;
 }
+function boopUploadImage(file, insert){
+  // Shared tail of both image entry points (paste + drag-and-drop): read the file as a data URL,
+  // upload to /paste_image (which stashes it under the server's .boopiter/images/), and hand the
+  // returned markdown tag to `insert` for caret placement (see paste_image() in cells.py).
+  var rd = new FileReader();
+  rd.onload = function(){
+    fetch('/paste_image', {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'data='+encodeURIComponent(rd.result)})
+    .then(function(r){ if(r.ok) return r.text(); })
+    .then(function(md){ if(md) insert(md); })
+    .catch(function(){});
+  };
+  rd.readAsDataURL(file);
+}
 function boopHandleImagePaste(e, insert){
-  // If the clipboard holds an image, claim the paste: upload it as a data URL to /paste_image,
-  // which stashes it under the server's .boopiter/images/ and answers with the markdown tag to
-  // drop at the caret (see paste_image() in cells.py). Text-only pastes fall through untouched --
-  // preventDefault only fires once an image item is actually found, so normal pasting never breaks.
+  // If the clipboard holds an image, claim the paste and upload it. Text-only pastes fall through
+  // untouched -- preventDefault only fires once an image item is actually found, so normal pasting
+  // never breaks.
   var items = (e.clipboardData && e.clipboardData.items) || [];
   for(var i = 0; i < items.length; i++){
     if(items[i].type && items[i].type.indexOf('image/') === 0){
       e.preventDefault();
-      var file = items[i].getAsFile();
-      var rd = new FileReader();
-      rd.onload = function(){
-        fetch('/paste_image', {method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded'},
-          body:'data='+encodeURIComponent(rd.result)})
-        .then(function(r){ if(r.ok) return r.text(); })
-        .then(function(md){ if(md) insert(md); })
-        .catch(function(){});
-      };
-      rd.readAsDataURL(file);
+      boopUploadImage(items[i].getAsFile(), insert);
       return;
     }
   }
+}
+function boopWireImageDrop(ta){
+  // Drag-and-drop images into an editing textarea: while a file hovers over the area, a green
+  // dashed outline + slight brightening signals "drop here"; on drop, every image file uploads
+  // and its markdown lands at the current caret (NOT the mouse position -- caret placement in a
+  // textarea from drop coordinates is unreliable across browsers, and the user asked for caret).
+  // Inline styles rather than Tailwind classes: the precompiled CSS only contains classes seen at
+  // build time, so class names minted here in JS could silently compile to nothing.
+  function isFileDrag(e){
+    var ts = e.dataTransfer && e.dataTransfer.types;
+    return ts && Array.prototype.indexOf.call(ts, 'Files') >= 0;
+  }
+  function off(){ ta.style.outline = ''; ta.style.outlineOffset = ''; ta.style.filter = ''; }
+  ta.addEventListener('dragover', function(e){
+    if(!isFileDrag(e)) return;
+    e.preventDefault();  // required, or the browser refuses the drop entirely
+    e.dataTransfer.dropEffect = 'copy';
+    ta.style.outline = '3px dashed #22c55e'; ta.style.outlineOffset = '-3px';
+    ta.style.filter = 'brightness(1.18)';
+  });
+  ta.addEventListener('dragleave', off);
+  ta.addEventListener('drop', function(e){
+    off();
+    if(!isFileDrag(e)) return;
+    e.preventDefault();  // even for non-image files -- the default is the browser navigating away to open the file
+    var fs = e.dataTransfer.files || [];
+    for(var i = 0; i < fs.length; i++){
+      if(fs[i].type && fs[i].type.indexOf('image/') === 0){
+        boopUploadImage(fs[i], function(md){ boopInsertAtCursor(ta, md); });
+      }
+    }
+  });
 }
 function boopCopy(id, ctype){
   var cm = window['_boopcm_'+id];
@@ -246,10 +282,12 @@ function boopInitEditors(root){
       // here: the composer's own inline onkeydown already handles submit, and stealing focus on
       // every htmx swap would be wrong for a bottom-of-page input.
       ta.addEventListener('paste', function(e){ boopHandleImagePaste(e, function(md){ boopInsertAtCursor(ta, md); }); });
+      boopWireImageDrop(ta);
     }
     else if(kind === 'edit'){
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
       ta.addEventListener('paste', function(e){ boopHandleImagePaste(e, function(md){ boopInsertAtCursor(ta, md); }); });
+      boopWireImageDrop(ta);
       ta.addEventListener('keydown', function(e){
         if((e.shiftKey||e.ctrlKey||e.metaKey) && e.key === 'Enter'){ e.preventDefault(); boopSave(ta.getAttribute('data-cid')); }
         else if((e.ctrlKey||e.metaKey) && (e.code === 'Minus' || e.key === '-' || e.key === '_')){
