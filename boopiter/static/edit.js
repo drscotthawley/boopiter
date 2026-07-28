@@ -156,9 +156,6 @@ function boopMakeCM(ta, isComposer){
   });
   if(isComposer){
     window._boopComposerCM = cm; cm.focus();
-    // Image paste lands in the composer too -- prompts often start life there. Code-cell editors
-    // are deliberately left out: a markdown image tag inside Python source is never what you want.
-    cm.on('paste', function(_, e){ boopHandleImagePaste(e, function(md){ cm.replaceSelection(md); }); });
     // Focusing the composer (bottom of the page) auto-scrolls it into view -- fine after the
     // user's own actions (e.g. Boop-ing a cell re-inits the composer), but on the very first
     // page load it means you land at the bottom of the notebook instead of the top, like Jupyter.
@@ -243,6 +240,13 @@ function boopInitEditors(root){
     var kind = ta.getAttribute('data-cm');
     if(kind === 'code'){ if(window.CodeMirror) boopMakeCM(ta, false); }
     else if(kind === 'composer'){ if(window.CodeMirror) boopMakeCM(ta, true); }
+    else if(kind === 'composer-plain'){
+      // The note/prompt/raw composer: a bare textarea (no CodeMirror), tagged with this kind purely
+      // so image paste works there -- it's where prompts usually start life. No focus/keydown setup
+      // here: the composer's own inline onkeydown already handles submit, and stealing focus on
+      // every htmx swap would be wrong for a bottom-of-page input.
+      ta.addEventListener('paste', function(e){ boopHandleImagePaste(e, function(md){ boopInsertAtCursor(ta, md); }); });
+    }
     else if(kind === 'edit'){
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
       ta.addEventListener('paste', function(e){ boopHandleImagePaste(e, function(md){ boopInsertAtCursor(ta, md); }); });

@@ -166,3 +166,6 @@ test_qwen.py
 
 # generated at launch by _build_tailwind() -- boopiter/static/tw_input.css is the tracked source
 boopiter/static/tailwind.css
+
+# pasted-image stash created under the server's launch dir (see paste_image() in cells.py)
+.boopiter/

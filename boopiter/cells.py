@@ -235,10 +235,10 @@ BROWSE_ROOT = Path.cwd()  # file browser is rooted here (wherever `boopiter` was
 # %% ../nbs/05_cells.ipynb #104800db
 _prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming a reply, if any -- parallel to _run_state (code), not shared with it: a code cell and a prompt reply use different resources and can run at the same time.
 
-def _run_prompt_bg(context:str, model:str, tools:list, think:str|None, state:_RunState) -> None:
+def _run_prompt_bg(context:str, model:str, tools:list, think:str|None, images:list|None, state:_RunState) -> None:
     "Runs in a background thread: drives llms.stream_llm_reply() (which owns the actual model-calling strategy, including how tools are exposed and reasoning effort is applied -- see there) into state.buffer/state.blocks. This function's only job is the background-thread/UI-state plumbing shared with code-cell streaming; it has no LLM-specific logic of its own."
     try:
-        for item in stream_llm_reply(context, model, tools, think):
+        for item in stream_llm_reply(context, model, tools, think, images):
             if item[0] == 'final':
                 _, content, details = item
                 state.blocks = (content, details)
@@ -262,7 +262,12 @@ def _start_prompt_run(prompt_id:int) -> None:
         tools = get_tool_list(nb.tool_selection) + nb.tools
         _push_tools()  # keep the shell namespace in sync before the model can suggest calling any of these
         think = nb.reasoning_effort if nb.use_reasoning else None
-        state.thread = threading.Thread(target=_run_prompt_bg, args=(llm_context(nb, prompt_id), model, tools, think, state), daemon=True)
+        ctx = llm_context(nb, prompt_id)
+        info = next((m for m in nb.models if m['id'] == model), None)
+        # Attach referenced /boopimg/ images only when the active model says it can see them -- a
+        # non-vision model just gets the markdown tags as text, same as before this feature existed.
+        images = _context_images(ctx) if info and 'vision' in info.get('capabilities', []) else None
+        state.thread = threading.Thread(target=_run_prompt_bg, args=(ctx, model, tools, think, images or None, state), daemon=True)
         _prompt_state = state
         state.thread.start()
     else:
@@ -647,7 +652,12 @@ def composer(draft:str='', oob:bool=False) -> FT:
                  cls=f'tab {"tab-active" if nb.compose_type==t else ""}',
                  hx_post=set_type.to(t=t), hx_target='#composer', hx_swap='outerHTML')
             for t in CTYPES]
-    ta_kw = {'data_cm':'composer'} if nb.compose_type=='code' else {}
+    # 'composer-plain' exists solely so boopInitEditors can find the non-code composer textarea and
+    # attach the image-paste handler -- without a data-cm attribute it's invisible to the init pass,
+    # which is exactly the bug that shipped v1 of image paste: cells' editors got the handler, the
+    # composer never did. Code mode keeps its CodeMirror 'composer' kind (and gets no image paste:
+    # a markdown image tag inside Python source is never what you want).
+    ta_kw = {'data_cm':'composer'} if nb.compose_type=='code' else {'data_cm':'composer-plain'}
     div_kw = {'hx_swap_oob':'true'} if oob else {}
     return Div(
         Div(*tabs, cls='tabs tabs-boxed'),
@@ -1025,6 +1035,11 @@ def paste_image(data:str) -> str:
     fname = f'{secrets.token_hex(16)}.{ext}'
     (_IMAGES_DIR/fname).write_bytes(base64.b64decode(b64))
     return f'![pasted image](/boopimg/{fname})'
+
+def _context_images(context:str) -> list[bytes]:
+    "Collect the raw bytes of every /boopimg/ image referenced in an assembled LLM context, in first-appearance order, deduped. Only the exact server-generated name shape is matched (same pattern boopimg() serves), and silently skips files that have since been deleted -- a stale markdown tag should degrade to text-only, not kill the prompt run."
+    names = list(dict.fromkeys(re.findall(r'/boopimg/([0-9a-f]{32}\.\w{1,5})', context)))
+    return [p.read_bytes() for n in names if (p := _IMAGES_DIR/n).exists()]
 
 @rt('/boopimg/{fname}')
 def boopimg(fname:str):

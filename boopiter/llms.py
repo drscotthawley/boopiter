@@ -190,13 +190,14 @@ def _deaddrop_stream_reply(context:str, model:str, poll_interval:float=1.0):
     else:
         yield from _deaddrop_stream_session(context, model, session_id, poll_interval)
 
-def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None):
-    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered."
+def stream_llm_reply(context:str, model:str, tools:list|None=None, think:str|None=None, images:list|None=None):
+    "Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. `images` is an optional list of raw image bytes to send alongside the context -- pass them only for models that advertise the vision capability (the caller checks; see cells.py's _start_prompt_run), as non-vision models error or ignore them. They ride as extra message parts via lisette's mk_msg (bytes -> base64 data URL), with the context text last. The dead-drop route ignores them for now -- file-based image handoff is its own upcoming feature. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered."
     if model.startswith('deaddrop/'):
         yield from _deaddrop_stream_reply(context, model)
         return
     chat = Chat(model, sp=tools_system_prompt(tools), tools=[], callkw={'_skip_mcp_handler': True})
-    for chunk in chat(context, stream=True, think=think):
+    content = [*images, context] if images else context  # image bytes first, question last -- and not named `msg`, which the final-chunk branch below reuses
+    for chunk in chat(content, stream=True, think=think):
         if hasattr(chunk.choices[0], 'message'):  # the final item -- a full ModelResponse, not a delta
             msg = contents(chunk)
             yield ('final', msg.content, _reply_details_html(chunk, msg))
