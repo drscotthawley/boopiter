@@ -331,14 +331,26 @@ def _push_tools() -> None:
 _push_tools()  # populate the namespace once at startup, matching the current (default) tool selection
 
 # %% ../nbs/05_cells.ipynb #ac17911d
+def _output_text(blocks:list[dict]) -> str:
+    "Flatten a code cell's output blocks (see Cell.output / run_code()) to plain text for the LLM context: stream/error/text-ish blocks pass through as-is, while binary display blocks (images etc.) become a short \"[<mime> output omitted]\" marker -- the model should at least know an output existed even though it can't be sent yet."
+    texty = {None, 'text/plain', 'text/markdown', 'text/html', 'application/json'}
+    return '\n'.join(b['data'] if b.get('mime') in texty else f"[{b['mime']} output omitted]" for b in blocks)
+
 def llm_context(nb:Notebook, cur_id:int|None=None) -> str:
-    "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order."
+    "Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order, with each code cell's outputs appended (via _output_text) so 'run this, then ask about the result' actually works. The `cur_id` cell itself is always included even if toggled invisible -- it's the question being asked, and dropping it would silently send a context with no prompt at the end."
     cutoff = len(nb.cells)
+    cur = None
     if cur_id is not None:
         i = nb.index(cur_id)
-        if i is not None: cutoff = i + 1
-    return '\n'.join(f'[{c.ctype}] {c.source}' for c in nb.cells[:cutoff] if c.visible)
-
+        if i is not None: cutoff, cur = i + 1, nb.cells[i]
+    lines = []
+    for c in nb.cells[:cutoff]:
+        if not (c.visible or c is cur): continue
+        lines.append(f'[{c.ctype}] {c.source}')
+        if c.output and isinstance(c.output, list):
+            out = _output_text(c.output)
+            if out: lines.append(f'[output] {out}')
+    return '\n'.join(lines)
 
 # %% ../nbs/05_cells.ipynb #44c07e09
 def stub_reply(nb:Notebook, prompt:str) -> str:
