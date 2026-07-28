@@ -8,7 +8,7 @@ Docs: https://drscotthawley.github.io/boopiter/plugins.html.md"""
 __all__ = ['PLUGINS', 'Plugin', 'register', 'start_plugins', 'SystemMonitor']
 
 # %% ../nbs/06_plugins.ipynb #0290e988
-import threading, time, subprocess
+import threading, time, subprocess, sys, re, socket
 from collections import deque
 from fastcore.utils import *
 from fasthtml.common import *
@@ -63,6 +63,16 @@ def _sparkline(vals:list, cls:str='text-cyan-400') -> FT:
 _ACTIVITY_ICON = ('M6 3h12A3 3 0 0 1 21 6v12A3 3 0 0 1 18 21H6A3 3 0 0 1 3 18V6A3 3 0 0 1 6 3Z',
                   'M3 12 5 12 9 17.5 15 6.5 19 12 21 12')
 
+def _gpu_sample_darwin() -> float|None:
+    "GPU utilization% on Apple Silicon via the IOKit registry's AGXAccelerator device -- no sudo required (unlike powermetrics), same technique remsysmon uses for local Mac GPU sampling. Unified memory means there's no separate VRAM pool to report, so this returns utilization only; SystemMonitor's VRAM row simply stays empty on a Mac, which render() already handles by skipping any metric with zero samples."
+    try:
+        out = subprocess.run(['ioreg', '-r', '-d', '1', '-c', 'AGXAccelerator', '-w', '0'],
+                             capture_output=True, text=True, timeout=2)
+        m = re.search(r'"Device Utilization %"=(\d+)', out.stdout)
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
+
 def _gpu_sample() -> tuple[float,float]|None:
     "(gpu_util%, vram_used%) for GPU 0, via nvidia-smi -- same shell-out approach as slmn.misc.gpu_free(), no pynvml/nvitop dependency needed. None if nvidia-smi is missing/fails (no GPU, driver issue, etc.) -- multi-GPU machines only get GPU 0 for now."
     try:
@@ -75,7 +85,7 @@ def _gpu_sample() -> tuple[float,float]|None:
 
 @register
 class SystemMonitor(Plugin):
-    "First plugin: continuously logs CPU%, system-RAM%, GPU-util%, and VRAM% into ring buffers in the background (whether or not its panel is open), and plots the accumulated history as inline-SVG sparklines when hovered. GPU/VRAM come from nvidia-smi (see _gpu_sample) -- rows just go empty/'--' if it's unavailable, no separate placeholder needed."
+    "First plugin: continuously logs CPU%, system-RAM%, GPU-util%, and VRAM% into ring buffers in the background (whether or not its panel is open), and plots the accumulated history as inline-SVG sparklines when hovered. GPU comes from nvidia-smi (_gpu_sample) on non-Mac hosts or the IOKit registry (_gpu_sample_darwin) on macOS; VRAM is nvidia-only -- Apple Silicon's unified memory has no separate pool to report. Rows just go empty/'--' if unavailable, no separate placeholder needed."
     name = 'System monitor'
     icon = _ACTIVITY_ICON
     def __init__(self, maxlen:int=300, interval:float=2.0):
@@ -100,7 +110,9 @@ class SystemMonitor(Plugin):
                 self.cpu.append(psutil.cpu_percent())
                 self.ram.append(psutil.virtual_memory().percent)
             except Exception: pass
-            if (g := _gpu_sample()) is not None:
+            if sys.platform == 'darwin':
+                if (u := _gpu_sample_darwin()) is not None: self.gpu.append(u)
+            elif (g := _gpu_sample()) is not None:
                 self.gpu.append(g[0]); self.vram.append(g[1])
             time.sleep(self.interval)
 
@@ -119,4 +131,5 @@ class SystemMonitor(Plugin):
         metrics = [('GPU', self.gpu, 'text-cyan-400'), ('VRAM', self.vram, 'text-amber-400'),
                    ('RAM', self.ram, 'text-fuchsia-400'), ('CPU', self.cpu, 'text-emerald-400')]
         rows = [self._metric_row(label, vals, color) for label, vals, color in metrics if vals]
-        return Div(Div('System monitor', cls='font-bold text-sm mb-1'), *rows, cls='flex flex-col gap-2 p-2 w-72')
+        header = Div(Span('System monitor', cls='font-bold text-sm'), Span(socket.gethostname(), cls='text-xs opacity-60 ml-auto'), cls='flex items-baseline mb-1')
+        return Div(header, *rows, cls='flex flex-col gap-2 p-2 w-72')

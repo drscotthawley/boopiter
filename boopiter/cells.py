@@ -1552,17 +1552,25 @@ def save_cell(id:int, source:str) -> FT|tuple:
     if c.ctype == 'code':
         return run_code_cell(c)
     elif c.ctype == 'prompt':
-        _start_prompt_run(id)
         i = nb.index(c.id)
         nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
         if nxt is not None and nxt.ctype == 'assistant':
-            # 'true'/'outerHTML' OOB swaps keep the tagged element itself, so pending_prompt_cell can carry the directive directly.
+            # The edited prompt has answered a question that no longer exists -- clear the old
+            # reply's content right now, synchronously, before starting the new run: same Cell
+            # object, same DOM node id, just emptied. Previously the old content stayed untouched
+            # until _finalize_prompt_reply overwrote it once the new reply finished, so a stale
+            # answer stayed visible (or a second reply could get appended, if anything ever left
+            # nxt looking like a non-assistant cell by finalize time) -- clearing here guarantees
+            # exactly one Cell per prompt throughout, no delete/insert, no window where two answers
+            # coexist.
+            nxt.source, nxt.details = '', None
             pend = pending_prompt_cell(id, oob_swap=f'outerHTML:#cell-{nxt.id}')
         else:
             # Positional OOB swaps (afterend/beforebegin/beforeend) insert only the tagged element's
             # *children* -- so pending_prompt_cell must be wrapped, not itself carry the hx-swap-oob attribute,
             # or its own id/hx-trigger="load" would be discarded on insertion. See _oob().
             pend = _oob(f'afterend:#cell-{c.id}', pending_prompt_cell(id))
+        _start_prompt_run(id)
         return render_cell(c), pend
     return render_cell(c)
 
