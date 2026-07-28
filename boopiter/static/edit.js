@@ -156,6 +156,9 @@ function boopMakeCM(ta, isComposer){
   });
   if(isComposer){
     window._boopComposerCM = cm; cm.focus();
+    // Image paste lands in the composer too -- prompts often start life there. Code-cell editors
+    // are deliberately left out: a markdown image tag inside Python source is never what you want.
+    cm.on('paste', function(_, e){ boopHandleImagePaste(e, function(md){ cm.replaceSelection(md); }); });
     // Focusing the composer (bottom of the page) auto-scrolls it into view -- fine after the
     // user's own actions (e.g. Boop-ing a cell re-inits the composer), but on the very first
     // page load it means you land at the bottom of the notebook instead of the top, like Jupyter.
@@ -175,6 +178,35 @@ function boopMakeCM(ta, isComposer){
     }
   }
   return cm;
+}
+function boopInsertAtCursor(ta, text){
+  var s = ta.selectionStart, e = ta.selectionEnd;
+  ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+  ta.selectionStart = ta.selectionEnd = s + text.length;
+}
+function boopHandleImagePaste(e, insert){
+  // If the clipboard holds an image, claim the paste: upload it as a data URL to /paste_image,
+  // which stashes it under the server's .boopiter/images/ and answers with the markdown tag to
+  // drop at the caret (see paste_image() in cells.py). Text-only pastes fall through untouched --
+  // preventDefault only fires once an image item is actually found, so normal pasting never breaks.
+  var items = (e.clipboardData && e.clipboardData.items) || [];
+  for(var i = 0; i < items.length; i++){
+    if(items[i].type && items[i].type.indexOf('image/') === 0){
+      e.preventDefault();
+      var file = items[i].getAsFile();
+      var rd = new FileReader();
+      rd.onload = function(){
+        fetch('/paste_image', {method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          body:'data='+encodeURIComponent(rd.result)})
+        .then(function(r){ if(r.ok) return r.text(); })
+        .then(function(md){ if(md) insert(md); })
+        .catch(function(){});
+      };
+      rd.readAsDataURL(file);
+      return;
+    }
+  }
 }
 function boopCopy(id, ctype){
   var cm = window['_boopcm_'+id];
@@ -213,6 +245,7 @@ function boopInitEditors(root){
     else if(kind === 'composer'){ if(window.CodeMirror) boopMakeCM(ta, true); }
     else if(kind === 'edit'){
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.addEventListener('paste', function(e){ boopHandleImagePaste(e, function(md){ boopInsertAtCursor(ta, md); }); });
       ta.addEventListener('keydown', function(e){
         if((e.shiftKey||e.ctrlKey||e.metaKey) && e.key === 'Enter'){ e.preventDefault(); boopSave(ta.getAttribute('data-cid')); }
         else if((e.ctrlKey||e.metaKey) && (e.code === 'Minus' || e.key === '-' || e.key === '_')){

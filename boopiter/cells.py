@@ -12,12 +12,12 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'BROWSE_ROOT', 'BORDER', 'ICONS', 're
            'render_nb', 'composer', 'render_app', 'theme_swap', 'fname_display', 'rename_form', 'brain_menu',
            'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'set_reasoning_effort', 'file_menu',
            'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll', 'top_bar',
-           'boopiter_ping', 'logo_png', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook',
-           'restart_server', 'shutdown_server', 'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel',
-           'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis',
-           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks',
-           'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype',
-           'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css', 'index', 'save_now', 'browse',
+           'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download', 'rename', 'restart_kernel',
+           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
+           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
+           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
+           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/05_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, re, signal, secrets
@@ -1010,6 +1010,28 @@ def boopiter_ping() -> str:
 def logo_png() -> FileResponse:
     "Serve the boopiter logo, used both as favicon and in the top bar."
     return FileResponse(Path(__file__).parent.parent/'images/logo.png')
+
+# %% ../nbs/05_cells.ipynb #cf144b90
+_IMAGES_DIR = Path.cwd()/'.boopiter'/'images'  # pasted-image stash, rooted at the server's launch dir (not the home dir) -- boopiter servers are often sandboxed to their own directory tree, and this way images travel with the project
+
+@rt
+def paste_image(data:str) -> str:
+    "Receive a pasted clipboard image as a base64 data URL (see the paste handler in static/edit.js), save it under _IMAGES_DIR with a random collision-proof name, and return the markdown to insert at the caret. The markdown points at the /boopimg/ serving route (below), not the filesystem path -- the browser needs a URL it can actually fetch for the image to render in the note's preview, and the same string is what rides along in Cell.source to the LLM."
+    import base64
+    header, _, b64 = data.partition(',')
+    m = re.match(r'data:image/(\w+)', header)
+    ext = {'jpeg': 'jpg'}.get(m.group(1), m.group(1)) if m else 'png'
+    _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f'{secrets.token_hex(16)}.{ext}'
+    (_IMAGES_DIR/fname).write_bytes(base64.b64decode(b64))
+    return f'![pasted image](/boopimg/{fname})'
+
+@rt('/boopimg/{fname}')
+def boopimg(fname:str):
+    "Serve a previously pasted image from _IMAGES_DIR. Names are generated server-side at paste time (token_hex + a short extension), so a strict fullmatch on that shape is cheap and closes path traversal without any path canonicalization."
+    if not re.fullmatch(r'[0-9a-f]{32}\.\w{1,5}', fname) or not (_IMAGES_DIR/fname).exists():
+        return Response(status_code=404)
+    return FileResponse(_IMAGES_DIR/fname)
 
 # %% ../nbs/05_cells.ipynb #b0deae69
 @rt('/tailwind.css')
