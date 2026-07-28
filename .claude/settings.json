@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(slmn *)",
+      "Bash(nbdev-export)",
+      "Bash(nbdev-clean)",
+      "Bash(nbdev-readme)"
+    ]
+  }
+}
