@@ -10,14 +10,14 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'BROWSE_ROOT', 'BORDER', 'ICONS', 're
            'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header',
            'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell', 'render_cell_edit',
            'render_nb', 'composer', 'render_app', 'theme_swap', 'fname_display', 'rename_form', 'brain_menu',
-           'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'set_reasoning_effort', 'file_menu',
-           'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll', 'top_bar',
-           'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css', 'index', 'save_now', 'browse',
-           'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download', 'rename', 'restart_kernel',
-           'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split',
-           'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta',
-           'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected', 'paste_selected',
-           'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'refresh_models', 'set_reasoning_effort',
+           'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll',
+           'top_bar', 'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css', 'index', 'save_now',
+           'browse', 'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download', 'rename',
+           'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell',
+           'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select',
+           'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
+           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/05_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, re, signal, secrets
@@ -367,16 +367,24 @@ def stub_reply(nb:Notebook, prompt:str) -> str:
 
 
 # %% ../nbs/05_cells.ipynb #db01327f
+def _default_picks(force:bool=False) -> None:
+    "Choose the standard/reasoning models from nb.models: the first model matching _PREFERRED_MODEL_SUBSTR (else the first model at all), and the first advertising Ollama's 'thinking' capability (else none). By default only *fills in* a pick that isn't valid any more -- None, or naming a model that has since disappeared -- so re-listing the models (see refresh_models(), which runs on every brain-menu hover) can't quietly overwrite a choice the user made. `force` re-derives both regardless, which is what a fresh start wants (see ensure_models())."
+    ids = {m['id'] for m in nb.models}
+    if force or nb.standard_model not in ids:
+        preferred = next((m for m in nb.models if _PREFERRED_MODEL_SUBSTR in m['id']), None)
+        nb.standard_model = preferred['id'] if preferred else (nb.models[0]['id'] if nb.models else None)
+    if force or nb.reasoning_model not in ids:
+        reasoning = next((m for m in nb.models if 'thinking' in m.get('capabilities', [])), None)
+        nb.reasoning_model = reasoning['id'] if reasoning else None
+
 def ensure_models() -> None:
-    "Populate nb.models (info dicts, see get_model_list()) plus default picks for the standard and reasoning models, tolerating an unreachable local LLM server. The reasoning default is whichever model first advertises Ollama's 'thinking' capability, if any -- see brain_menu()."
+    "Populate nb.models (info dicts, see get_model_list()) plus default picks for both models, tolerating an unreachable local LLM server. Run once at startup; refresh_models() takes over from there, so an Ollama that wasn't running yet when boopiter started is picked up on the next brain-menu hover rather than needing a server restart."
     try:
         nb.models = get_model_list()
     except Exception:
         nb.models = []
-    preferred = next((m for m in nb.models if _PREFERRED_MODEL_SUBSTR in m['id']), None)
-    nb.standard_model = preferred['id'] if preferred else (nb.models[0]['id'] if nb.models else None)
-    reasoning = next((m for m in nb.models if 'thinking' in m.get('capabilities', [])), None)
-    nb.reasoning_model = reasoning['id'] if reasoning else None
+    _default_picks(force=True)
+    _apply_active_model()  # sweep out anything a previous boopiter process (or another Ollama client) left resident, so the memory state matches the picks the menu is about to show
 
 # %% ../nbs/05_cells.ipynb #3014974b
 try:
@@ -719,15 +727,18 @@ def _model_label(m:dict) -> str:
 
 # %% ../nbs/05_cells.ipynb #80b17b22
 def _model_select(models:list[dict], active_id:str|None, route) -> FT:
-    "An inline, DOM-contained list of `models` as clickable rows -- NOT a native <select>, whose option list the browser renders as OS chrome *outside* the page DOM, which breaks brain_menu()'s hover/focus-within visibility the moment the pointer moves onto it (the whole menu vanishes before you can pick anything). Clicking a row posts the chosen model id to `route`, which re-renders the whole brain menu (hx_target=#brain-menu) so the new pick's checkmark shows. Shared by the Standard/Reasoning pickers."
+    "An inline, DOM-contained list of `models` as clickable rows -- NOT a native <select>, whose option list the browser renders as OS chrome *outside* the page DOM, which breaks brain_menu()'s hover/focus-within visibility the moment the pointer moves onto it (the whole menu vanishes before you can pick anything). Clicking a row posts the chosen model id to `route`, which re-renders the whole brain menu (hx_target=#brain-menu) so the new pick's checkmark shows. Shared by the Standard/Reasoning pickers. While Ollama is unreachable (nb.ollama_ok False, see refresh_models()) its models are greyed and made unclickable rather than dropped from the list: a model that can't answer right now shouldn't look selectable, but silently removing entries would also throw away a pick you'd made -- over something as ordinary as a restart or a network hiccup -- and dead-drop models, which don't need Ollama at all, stay live alongside them."
     rows = []
     for m in models:
         active = (m['id'] == active_id)
-        rows.append(fh.Li(fh.A(
-            Span('✓' if active else '', cls='inline-block w-3 text-cyan-400'),
-            Span(_model_label(m)),
-            hx_post=route.to(model=m['id']), hx_target='#brain-menu', hx_swap='outerHTML',
-            cls='flex items-center gap-1 py-0.5' + (' font-semibold' if active else ''))))
+        dead = not nb.ollama_ok and m['id'].startswith('ollama/')
+        label = [Span('✓' if active else '', cls='inline-block w-3 text-cyan-400'), Span(_model_label(m))]
+        cls = 'flex items-center gap-1 py-0.5' + (' font-semibold' if active else '') + (' opacity-40' if dead else '')
+        # A greyed row is rendered without its hx_post, so a click is inert -- 'disabled' isn't a
+        # thing on an <a>, and leaving the post wired up would let you select a model that can't answer.
+        link = fh.A(*label, cls=cls, title='Ollama unreachable') if dead else fh.A(
+            *label, hx_post=route.to(model=m['id']), hx_target='#brain-menu', hx_swap='outerHTML', cls=cls)
+        rows.append(fh.Li(link))
     return fh.Ul(*rows, cls='menu menu-sm p-0 gap-0 w-full max-h-64 overflow-y-auto flex-nowrap')
 
 # %% ../nbs/05_cells.ipynb #9e3ec772
@@ -773,25 +784,26 @@ def brain_menu(icon_cls:str) -> FT:
         Ul(Li(Div(*rows, cls='flex flex-col gap-2 p-2')), tabindex='0',
            style=f'left:50%; transform:translateX(-50%); width:{width_px}px;',
            cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
-        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom')
+        id='brain-menu', cls='dropdown dropdown-hover dropdown-bottom',
+        # Re-list the models each time the pointer arrives, so an Ollama started after boopiter shows up
+        # without a server restart (see refresh_models(), which answers 204 and swaps nothing when the
+        # list is unchanged -- the usual case -- so this costs a hover nothing visually). The delay means
+        # a pointer merely crossing the icon on its way elsewhere never fires the request.
+        hx_get=refresh_models, hx_trigger='mouseenter delay:150ms', hx_target='#brain-menu', hx_swap='outerHTML')
 
 
 # %% ../nbs/05_cells.ipynb #7f7b8257
-def _apply_active_model(prev_active:str|None) -> None:
-    "After changing standard_model/reasoning_model/use_reasoning, stop whichever Ollama model was previously active (see nb.active_model()) if the switch actually changed it -- frees its VRAM, same as the old single-model set_model() used to do."
-    new_active = nb.active_model()
-    if prev_active and prev_active != new_active and prev_active.startswith('ollama/'):
-        try: subprocess.run(['ollama', 'stop', prev_active.removeprefix('ollama/')], capture_output=True, timeout=5)
-        except Exception: pass
+def _apply_active_model() -> None:
+    "After any brain-menu change (standard_model/reasoning_model/use_reasoning), drop every Ollama model that isn't one of the two current picks -- see sync_ollama_loaded(), which does the sweep -- so switching models frees the old one's RAM/VRAM instead of leaving a stack of resident weights behind. Both picks are kept, not just nb.active_model(), because flipping the reasoning toggle back and forth is a common move and shouldn't mean reloading from disk each time. Runs on a daemon thread: unloading a large model can take a beat, and there's no reason to hold up the HTTP response (just the re-rendered menu) while Ollama frees memory."
+    threading.Thread(target=sync_ollama_loaded, args=([nb.standard_model, nb.reasoning_model],), daemon=True).start()
 
 # %% ../nbs/05_cells.ipynb #bc2d594c
 @rt
 def set_standard_model(model:str) -> FT:
     "Change the Standard-model pick in the brain menu, then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model()."
     if any(m['id'] == model for m in nb.models) and model != nb.standard_model:
-        prev_active = nb.active_model()
         nb.standard_model = model
-        _apply_active_model(prev_active)
+        _apply_active_model()
     return brain_menu(_TOPBAR_ICON_CLS_LG)
 
 # %% ../nbs/05_cells.ipynb #ee97c857
@@ -799,18 +811,33 @@ def set_standard_model(model:str) -> FT:
 def set_reasoning_model(model:str) -> FT:
     "Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models), then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model()."
     if any(m['id'] == model for m in nb.models) and model != nb.reasoning_model:
-        prev_active = nb.active_model()
         nb.reasoning_model = model
-        _apply_active_model(prev_active)
+        _apply_active_model()
     return brain_menu(_TOPBAR_ICON_CLS_LG)
 
 # %% ../nbs/05_cells.ipynb #cee2215a
 @rt
 def toggle_reasoning() -> FT:
     "The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state."
-    prev_active = nb.active_model()
     nb.use_reasoning = not nb.use_reasoning
-    _apply_active_model(prev_active)
+    _apply_active_model()
+    return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+# %% ../nbs/05_cells.ipynb #refreshmodels1
+@rt
+def refresh_models():
+    "Re-list the available models and re-render the brain menu if anything actually changed -- wired to mouseenter on the menu itself (see brain_menu()), so starting Ollama *after* boopiter no longer means restarting the server to see its models; hovering the brain icon is enough. Returns 204 No Content whenever nothing changed, which tells htmx to swap nothing at all: re-rendering an open dropdown on every hover would make the menu visibly flicker, and re-rendering it while the pointer is inside it risks disturbing the CSS :hover state keeping it open. Cheap enough to run on hover -- ~8ms for the /api/tags listing, with the expensive per-model capability probes served from cache (see _ollama_caps) -- and it runs alongside the CSS-driven dropdown rather than gating it, so the menu opens instantly either way. An unreachable Ollama does NOT clear the list (that's what strict=True distinguishes: 'Ollama is down' vs 'Ollama has no models'); it flips nb.ollama_ok so the existing entries render greyed and unclickable, keeping your current pick intact through a restart or a network hiccup. Picks are otherwise repaired, not reset (see _default_picks): a model that has genuinely vanished gets replaced, one you chose is left alone."
+    try:
+        models = get_model_list(strict=True)
+    except Exception:
+        if not nb.ollama_ok: return Response(status_code=204)  # already shown as unreachable -- nothing new to say
+        nb.ollama_ok = False
+        return brain_menu(_TOPBAR_ICON_CLS_LG)  # must re-render, or the greying would never appear
+    was_down, nb.ollama_ok = not nb.ollama_ok, True
+    if not was_down and [m['id'] for m in models] == [m['id'] for m in nb.models]:
+        return Response(status_code=204)
+    nb.models = models
+    _default_picks()
     return brain_menu(_TOPBAR_ICON_CLS_LG)
 
 # %% ../nbs/05_cells.ipynb #4c41b4b9
