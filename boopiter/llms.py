@@ -47,11 +47,14 @@ def get_tool_list(selection:dict=None # which tool sources to include -- keys 'b
 
 # %% ../nbs/01_llms.ipynb #9df9b2f0
 def get_ollama_list() -> list[dict]:
-    "Get info on every locally-available Ollama model, straight from /api/tags -- each dict is the raw entry (name, details incl. parameter_size/family, and capabilities e.g. 'vision'/'tools'/'thinking') plus an added 'id' key ('ollama/<model>', the string used elsewhere as the model identifier -- see nb.model). Returns [] and warns if Ollama unavailable."
+    "Get info on every locally-available Ollama model: the raw /api/tags entry (name, details incl. parameter_size/family) plus an added 'id' key ('ollama/<model>', the string used elsewhere as the model identifier -- see nb.model) and a 'capabilities' list (e.g. 'vision'/'tools'/'thinking'). Capabilities are NOT in /api/tags -- only the per-model /api/show endpoint reports them, so one extra POST per model; a failed show just means an empty capabilities list, not a failed listing. Returns [] and warns if Ollama unavailable."
     import httpx, warnings
     try:
         models = httpx.get("http://localhost:11434/api/tags").json().get('models', [])
-        for m in models: m['id'] = 'ollama/' + m['model']
+        for m in models:
+            m['id'] = 'ollama/' + m['model']
+            try: m['capabilities'] = httpx.post("http://localhost:11434/api/show", json={'model': m['model']}).json().get('capabilities', [])
+            except Exception: m['capabilities'] = []
         return models
     except Exception as e:
         warnings.warn(f"Ollama not available: {e}")
