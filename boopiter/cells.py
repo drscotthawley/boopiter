@@ -899,18 +899,21 @@ _SHARE_BUILD_WAIT = 240  # seconds to keep polling the published URL for GitHub 
 
 def share_menu(icon_cls:str) -> FT:
     "The share button: a hover menu (same idiom as tools_menu/brain_menu) offering Public or Unlisted, rather than a plain button. Both publish the same page to the same URL; the choice only decides whether the site's index links to it, and re-sharing with the other choice flips that -- so this is a state toggle, not a one-way door. A hover menu rather than a modal or a native <select>, because a real select renders its options as OS chrome outside the page and collapses the popup the moment the pointer moves onto them (see _model_select)."
-    rows = [Div('Share notebook', cls='font-bold text-sm mb-1'),
-            fh.Ul(*[fh.Li(fh.A(Div(label, cls='font-medium'), Div(hint, cls='text-xs opacity-60'),
-                               hx_post=share_nb.to(vis=val), hx_target='#share-toast', hx_swap='outerHTML',
-                               cls='flex flex-col gap-0 py-1'))
-                    # String values, not 0/1: fasthtml's .to() renders a falsy int as an empty query
-                    # value ('?listed='), which would quietly turn Unlisted into Public.
-                    for label, hint, val in (('Public', 'listed on the boops index', 'public'),
-                                             ('Unlisted', 'reachable by link only', 'unlisted'))],
-                  cls='menu menu-sm p-0 gap-0 w-full')]
+    # Built exactly like file_menu()'s hamburger: ONE .menu with plain li > a rows, so the hover
+    # highlight is DaisyUI's own and lines up by itself. Earlier attempts nested a second .menu inside
+    # this one, which adds its own inline padding per row on top of ours -- that's what made the
+    # highlight lopsided, and hand-rolling a hover colour instead didn't work either, since a
+    # hover:bg-base-300 variant isn't in the compiled Tailwind (base-300 is a DaisyUI colour).
+    # String values, not 0/1: fasthtml's .to() renders a falsy int as an empty query value
+    # ('?listed='), which would quietly turn Unlisted into Public.
+    rows = [fh.Li(fh.A(Div(label, cls='font-medium'), Div(hint, cls='text-xs opacity-60'),
+                       hx_post=share_nb.to(vis=val), hx_target='#share-toast', hx_swap='outerHTML',
+                       cls='flex flex-col items-start gap-0'))
+            for label, hint, val in (('Public', 'listed on the boops index', 'public'),
+                                     ('Unlisted', 'reachable by link only', 'unlisted'))]
     return Div(
         fh.Button(Icon('share', cls=icon_cls), cls='btn btn-ghost btn-circle btn-sm'),
-        Ul(Li(Div(*rows, cls='flex flex-col gap-1 p-2')), tabindex='0',
+        Ul(fh.Li(Span('Share notebook'), cls='menu-title'), *rows, tabindex='0',
            style='left:50%; transform:translateX(-50%); width:230px;',
            cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
         id='share-menu', cls='dropdown dropdown-hover dropdown-bottom')

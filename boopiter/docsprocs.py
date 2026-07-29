@@ -150,18 +150,25 @@ def _ensure_gh_pages_branch(owner:str) -> None:
 _BOOPIMG_RE = re.compile(r'/boopimg/([0-9a-f]{32}\.\w{1,5})')  # the exact name shape boopimg() serves; see paste_image() in cells.py
 _DESC_RES = (re.compile(r'\*(?!\*)(.+?)\*$'), re.compile(r'>\s*(.+)$'))  # a lead-in written as *italics* or > a quote
 
-def _description(doc) -> str|None:
-    "The line immediately under a notebook's '# ' title, if it's written as *italics* or a > quote -- used as the post's description so the index shows a subtitle under each entry. Only that one line counts, and only when it's the first non-blank thing after the heading: anything further down is body text, not a summary. Blank lines between the two are ignored, and the line may sit in the title's own cell or the next markdown cell. The formatting is stripped, since it's markup for reading the notebook, not part of the sentence. Returns None when there's no such line, which leaves the description unset."
+def _pop_description(doc) -> str|None:
+    "Take the line immediately under a notebook's '# ' title -- if it's written as *italics* or a > quote -- as the post's description, and REMOVE it from the notebook so it isn't also rendered in the body. Removal is the point: Quarto puts the description in the page's title block, and nbdev's own FrontmatterProc blanks that cell during a docs build, which is why the docs site never shows it twice; a share only runs color_cells, so without this the line appears both as the subtitle and again as the first paragraph. Only the one line counts, and only as the first non-blank thing after the heading -- anything further down is body text, not a summary. Blank lines between the two are ignored, and the line may sit in the title's own cell or the next markdown cell. Formatting is stripped, being markup for reading the notebook rather than part of the sentence. The doc passed in is the in-memory copy that gets written into the share directory, so the notebook on disk is untouched. Returns None (changing nothing) when there's no such line."
     cells = [c for c in doc.cells if c.cell_type == 'markdown']
     for i, c in enumerate(cells):
         src = c.source.lstrip()
         if not src.startswith('# '): continue
         rest = src.split('\n', 1)[1] if '\n' in src else ''
-        lines = [l for l in rest.splitlines() if l.strip()]
-        if not lines and i+1 < len(cells): lines = [l for l in cells[i+1].source.splitlines() if l.strip()]
+        target, lines = c, [l for l in rest.splitlines() if l.strip()]
+        if not lines and i+1 < len(cells):
+            target = cells[i+1]
+            lines = [l for l in target.source.splitlines() if l.strip()]
         if not lines: return None
         for rx in _DESC_RES:
-            if (m := rx.match(lines[0].strip())): return m.group(1).strip()
+            if (m := rx.match(lines[0].strip())):
+                # Drop just that line; the heading (and anything below) stays put. A cell left holding
+                # nothing renders as nothing -- color_cells skips empty sources, so no stray ::: fence.
+                keep = [l for l in target.source.splitlines() if l.strip() != lines[0].strip()]
+                target.source = '\n'.join(keep).strip('\n')
+                return m.group(1).strip()
         return None
     return None
 
@@ -175,7 +182,7 @@ def _write_share(nb_path, listed:bool, images_dir=None) -> str:
     # Read title/description off the untouched cells: color_cells wraps markdown in ::: fences below,
     # which would hide a description living in the cell after the heading.
     has_title = any(c.cell_type == 'markdown' and c.source.lstrip().startswith('# ') for c in doc.cells)
-    desc = _description(doc)
+    desc = _pop_description(doc)   # also strips the line, so it isn't rendered twice
     for c in doc.cells:
         # A pasted image is stored as /boopimg/<name>, a URL only a running boopiter can serve, so it
         # 404s on a shared page. Copy each referenced file in beside the notebook and point the
