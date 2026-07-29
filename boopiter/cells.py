@@ -10,13 +10,13 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'BROWSE_ROOT', 'BORDER', 'ICONS', 're
            'stub_reply', 'ensure_models', 'Icon', 'IconBtn', 'cell_toolbar', 'type_dropdown', 'cell_header',
            'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell', 'render_cell_edit',
            'render_nb', 'composer', 'render_app', 'theme_swap', 'fname_display', 'rename_form', 'brain_menu',
-           'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'refresh_models', 'set_reasoning_effort',
-           'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu', 'plugin_panel_poll',
-           'top_bar', 'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css', 'index', 'save_now',
-           'browse', 'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download', 'rename',
-           'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell',
-           'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell', 'select',
-           'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
+           'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'refresh_models', 'set_keep_alive',
+           'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu',
+           'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css',
+           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download',
+           'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell',
+           'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell',
+           'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
            'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/05_cells.ipynb #67249157
@@ -238,7 +238,7 @@ _prompt_state:'_RunState|None' = None  # the one Prompt cell currently streaming
 def _run_prompt_bg(context:str, model:str, tools:list, think:str|None, images:list|None, state:_RunState) -> None:
     "Runs in a background thread: drives llms.stream_llm_reply() (which owns the actual model-calling strategy, including how tools are exposed and reasoning effort is applied -- see there) into state.buffer/state.blocks. This function's only job is the background-thread/UI-state plumbing shared with code-cell streaming; it has no LLM-specific logic of its own."
     try:
-        for item in stream_llm_reply(context, model, tools, think, images):
+        for item in stream_llm_reply(context, model, tools, think, images, nb.keep_alive_min):
             if item[0] == 'final':
                 _, content, details = item
                 state.blocks = (content, details)
@@ -771,6 +771,11 @@ def brain_menu(icon_cls:str) -> FT:
     # DaisyUI's .menu auto-flexes a li's direct children into a row -- explicit flex-col here
     # overrides that so Standard/Reasoning/Effort stack vertically instead of piling up sideways.
     rows = [Div('Model Selection', cls='font-bold text-sm mb-1'),
+            # Sits up here, under the header and above both pickers, rather than down by Effort:
+            # it applies to whichever model answers, not just the reasoning one, and the Effort row
+            # it used to follow only renders at all when a thinking-capable model exists.
+            Div(Span('Keep loaded', cls='text-xs font-semibold mr-2'), _keep_alive_control(),
+                Span('min', cls='text-xs ml-1 opacity-60'), cls='flex items-center mb-2'),
             Div('Standard model', cls='text-sm'),
             _model_select(nb.models, nb.standard_model, set_standard_model) if nb.models else Span('no models', cls='text-xs opacity-50'),
             Div('Reasoning model', cls='text-sm mt-2 text-cyan-400'),  # cyan reinforces the same 'this is thinking' cue as the brain icon's own toggled color and the 'Tricky...' streaming indicator
@@ -854,6 +859,23 @@ def refresh_models():
     nb.models = models
     _default_picks()
     return brain_menu(_TOPBAR_ICON_CLS_LG)
+
+# %% ../nbs/05_cells.ipynb #keepalivectrl1
+def _keep_alive_control() -> FT:
+    "The little number spinner beside the brain icon: how many minutes Ollama keeps a model in memory after it answers (nb.keep_alive_min, sent on every call -- see _chat_callkw). A native type=number input, so the browser supplies the up/down arrows for free; same widget shape as remsysmon's polling-interval control. 0 means unload the moment a reply finishes -- which is how you get to no resident models at all without quitting Ollama -- and -1 means keep it loaded indefinitely, for when you'd rather spend the RAM than wait on a reload. Only a backstop -- switching models in the brain menu already frees the old one immediately (see sync_ollama_loaded)."
+    return Input(type='number', name='minutes', value=str(nb.keep_alive_min), min='-1', step='1',
+                 title='Minutes Ollama keeps a model in memory after answering (0 = unload immediately, -1 = keep loaded indefinitely)',
+                 hx_post=set_keep_alive, hx_trigger='change', hx_swap='none',
+                 # Plain title= rather than DaisyUI's tooltip classes: this lives inside the
+                 # hover-dropdown, and a tooltip popping out of an already-popped-out menu fights it.
+                 cls='w-14 px-1 py-0.5 rounded bg-base-300 text-center tabular-nums text-xs '
+                     'text-base-content border border-base-content/20')
+
+@rt
+def set_keep_alive(minutes:int=None) -> str:
+    "Persist a new keep-alive from the spinner. Clamped at -1, the lowest value Ollama gives a distinct meaning: any negative keep_alive means 'keep this model loaded indefinitely', so -2 and -1 do the same thing and there's no reason to let the box go lower. Takes effect on the next model call; nothing to re-render, hence hx-swap=none."
+    if minutes is not None: nb.keep_alive_min = max(-1, int(minutes))
+    return ''
 
 # %% ../nbs/05_cells.ipynb #4c41b4b9
 @rt
