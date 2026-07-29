@@ -16,3 +16,13 @@ $code-block-bg: #282a36; // dracula bg    -- fenced code blocks. With a light/da
                        //                    the bright tokens aren't stranded on cosmo's light one.
 
 /*-- scss:rules --*/
+
+// Inline `backtick` code: repaint the background. Bootstrap's own `code` rule hardcodes
+// background-color:#f8f9fa (near-white) and Quarto ships that rule unchanged in the DARK bundle too,
+// so inline code renders as a light chip on the dark page -- most obvious in a title block's
+// description, where there's nothing else nearby to disguise it. No Sass variable covers it, hence a
+// rule. Matching $code-block-bg above keeps inline and fenced code the same colour.
+// `:not(pre) > code` targets inline code only: code inside a <pre> is already transparent (Bootstrap
+// sets `pre code{background-color:rgba(0,0,0,0)}`), and repainting it would box every line of a
+// fenced block separately.
+:not(pre) > code { background-color: $code-block-bg; }

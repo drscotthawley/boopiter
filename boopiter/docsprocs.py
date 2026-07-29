@@ -109,8 +109,12 @@ def _ensure_share_project() -> Path:
         raise RuntimeError(f'{proc}/_quarto.yml not found -- run nbdev_docs once so the docs config exists')
     first = not SHARE_PROJECT.exists()
     SHARE_PROJECT.mkdir(parents=True, exist_ok=True)
+    # Assets come from nbs/, the source of truth -- _proc holds copies that only refresh when the docs
+    # are rebuilt, so taking them from there meant a theme edit didn't reach a share until then.
+    nbs = _repo_root()/'nbs'
     for a in _SHARE_ASSETS:
-        if (proc/a).exists(): shutil.copy(proc/a, SHARE_PROJECT/a)
+        src = nbs/a if (nbs/a).exists() else proc/a
+        if src.exists(): shutil.copy(src, SHARE_PROJECT/a)
     meta = yaml.safe_load((proc/'nbdev.yml').read_text()) if (proc/'nbdev.yml').exists() else {}
     docs_url = (meta.get('website') or {}).get('site-url')
     _write_project_config(proc, SHARE_PROJECT)
