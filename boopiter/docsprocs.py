@@ -59,7 +59,14 @@ def _share_quarto_config(proc:Path, out:Path) -> None:
     cfg['metadata-files'] = [f for f in cfg.get('metadata-files', []) if (proc/f).exists()]
     site = cfg.setdefault('website', {})
     site['sidebar'] = False
-    site.setdefault('navbar', {})['search'] = False   # navbar stays: it carries Quarto's colour-scheme toggle
+    nav = site.setdefault('navbar', {})
+    nav['search'] = False   # navbar stays: it carries Quarto's colour-scheme toggle
+    # Point the 'boopiter' brand at the docs site. Left alone it links to this one-page site's own
+    # root, i.e. back to the page you're already on. Taken from nbdev.yml's site-url rather than
+    # written out here, so it follows the docs site if that ever moves.
+    meta = yaml.safe_load((proc/'nbdev.yml').read_text()) if (proc/'nbdev.yml').exists() else {}
+    docs_url = (meta.get('website') or {}).get('site-url')
+    if docs_url: nav['logo-href'] = docs_url   # per Quarto's schema this is the target for the navbar logo *and* title
     logo = _repo_root()/'images'/'logo.png'
     if logo.exists():
         shutil.copy(logo, out/'logo.png')
