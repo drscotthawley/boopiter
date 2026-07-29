@@ -11,7 +11,7 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'NU
            'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'fname_display', 'rename_form',
            'brain_menu', 'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'refresh_models',
-           'set_keep_alive', 'share_panel', 'share_nb', 'share_poll', 'share_dismiss', 'set_num_ctx',
+           'set_keep_alive', 'share_menu', 'share_panel', 'share_nb', 'share_poll', 'share_dismiss', 'set_num_ctx',
            'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu',
            'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css',
            'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download',
@@ -894,14 +894,32 @@ def set_keep_alive(minutes:int=None) -> str:
     return ''
 
 # %% ../nbs/05_cells.ipynb #shareui1
-_share_state:dict|None = None  # the one in-flight (or last finished) share: {'status','url','error','name'}. Module-level like _run_state/_prompt_state, since a share is a single background job, not per-cell.
+_share_state:dict|None = None  # the one in-flight (or last finished) share: {'status','url','error','name','listed'}. Module-level like _run_state/_prompt_state, since a share is a single background job, not per-cell.
 _SHARE_BUILD_WAIT = 240  # seconds to keep polling the published URL for GitHub Pages to build before giving up on it
 
-def _share_bg(path:Path) -> None:
-    "Background thread body: render + publish (see docsprocs.share_notebook), then wait for the page to actually go live before reporting success. The wait matters -- the push returns in a few seconds but Pages needs about a minute to build, so handing over the link the instant git finishes means the first click is a 404 that looks exactly like a failed share. Falls through to 'done' on timeout anyway rather than claiming failure: the build usually is coming, just slower than we waited. Catches everything, since quarto/gh/git can all fail and a traceback in a daemon thread would otherwise leave the notice spinning forever."
+def share_menu(icon_cls:str) -> FT:
+    "The share button: a hover menu (same idiom as tools_menu/brain_menu) offering Public or Unlisted, rather than a plain button. Both publish the same page to the same URL; the choice only decides whether the site's index links to it, and re-sharing with the other choice flips that -- so this is a state toggle, not a one-way door. A hover menu rather than a modal or a native <select>, because a real select renders its options as OS chrome outside the page and collapses the popup the moment the pointer moves onto them (see _model_select)."
+    rows = [Div('Share notebook', cls='font-bold text-sm mb-1'),
+            fh.Ul(*[fh.Li(fh.A(Div(label, cls='font-medium'), Div(hint, cls='text-xs opacity-60'),
+                               hx_post=share_nb.to(vis=val), hx_target='#share-toast', hx_swap='outerHTML',
+                               cls='flex flex-col gap-0 py-1'))
+                    # String values, not 0/1: fasthtml's .to() renders a falsy int as an empty query
+                    # value ('?listed='), which would quietly turn Unlisted into Public.
+                    for label, hint, val in (('Public', 'listed on the boops index', 'public'),
+                                             ('Unlisted', 'reachable by link only', 'unlisted'))],
+                  cls='menu menu-sm p-0 gap-0 w-full')]
+    return Div(
+        fh.Button(Icon('share', cls=icon_cls), cls='btn btn-ghost btn-circle btn-sm'),
+        Ul(Li(Div(*rows, cls='flex flex-col gap-1 p-2')), tabindex='0',
+           style='left:50%; transform:translateX(-50%); width:230px;',
+           cls='dropdown-content menu bg-base-200 rounded-box z-10 p-1 shadow'),
+        id='share-menu', cls='dropdown dropdown-hover dropdown-bottom')
+
+def _share_bg(path:Path, listed:bool) -> None:
+    "Background thread body: publish (see docsprocs.share_notebook), then wait for the page to actually go live before reporting success. The wait matters -- the push returns in seconds but Pages needs about a minute to build, so handing over the link the instant it finishes means the first click is a 404 that looks exactly like a failed share. Falls through to 'done' on timeout rather than claiming failure: the build usually is coming, just slower than we waited. Catches everything, since quarto/gh/git can all fail and a traceback in a daemon thread would otherwise leave the notice spinning forever."
     import httpx, time as _t
     try:
-        url = share_notebook(path)
+        url = share_notebook(path, listed=listed, images_dir=_IMAGES_DIR)  # pasted images live here; docsprocs can't import it (cells imports docsprocs, not the reverse)
         _share_state.update(status='building', url=url)
         deadline = _t.monotonic() + _SHARE_BUILD_WAIT
         while _t.monotonic() < deadline:
@@ -910,15 +928,17 @@ def _share_bg(path:Path) -> None:
             except Exception: pass
             _t.sleep(3)
         _share_state.update(status='done')
+    except subprocess.CalledProcessError as e:
+        _share_state.update(status='error', error=(e.stderr or b'')[-400:].decode(errors='replace') or str(e))
     except Exception as e:
         _share_state.update(status='error', error=f'{type(e).__name__}: {e}')
 
 def _share_toast(*kids, kind:str='alert-info', poll:bool=False) -> FT:
-    "Wrap the share notice in the same #save-toast slot and DaisyUI alert the 'Saved' notice uses (see _toast), so it lands top-right where you already look for feedback. Unlike _toast it carries no self-clearing Script -- a share notice has to stay put long enough to copy the link out of it -- so it's dismissed by hand instead. `poll` re-requests it while the share is still running."
-    kw = dict(hx_post=share_poll, hx_trigger='load delay:1500ms', hx_target='#share-toast', hx_swap='outerHTML') if poll else {}
-    # Its own container, NOT the #save-toast slot: a share outlives any number of saves, and sharing
-    # the slot meant hitting S mid-publish wiped the notice (and with it the link you were waiting for).
-    # Offset below the save toast, via inline style since DaisyUI's toast-top pins both to the same edge.
+    "Wrap the share notice in the same DaisyUI alert the 'Saved' notice uses, so it lands top-right where you already look for feedback. Its own #share-toast slot, NOT the save toast's: a share outlives any number of saves, and sharing the slot meant hitting S mid-publish wiped the notice, and with it the link being waited on. Offset below the save toast, via inline style since DaisyUI's toast-top pins both to the same edge. Unlike _toast it carries no self-clearing Script -- a share notice has to stay put long enough to copy the link out of it -- so it's dismissed by hand."
+    # 'every 2s' on a node that stays put, NOT 'load delay' + replacing itself: re-creating the element
+    # each poll restarts the spinner's animation and flashes the whole notice. Paired with share_poll's
+    # 204-when-unchanged, nothing in the DOM is touched at all between actual state changes.
+    kw = dict(hx_post=share_poll, hx_trigger='every 2s', hx_target='#share-toast', hx_swap='outerHTML') if poll else {}
     return Div(Div(*kids, cls=f'alert {kind} shadow-lg text-sm py-2 px-4 flex flex-col items-start gap-1'),
                id='share-toast', cls='toast toast-top toast-end z-50', style='top:4.5rem', **kw)
 
@@ -926,12 +946,13 @@ def share_panel() -> FT:
     "The share notice: progress while rendering and publishing, then the published URL with a button to copy it. Persistent -- it stays until dismissed, because its whole job is to leave the link on screen long enough to paste somewhere."
     st = _share_state or {}
     status = st.get('status')
+    listed = st.get('listed', True)
     dismiss = fh.Button('Dismiss', cls='btn btn-xs btn-ghost',
                         hx_post=share_dismiss, hx_target='#share-toast', hx_swap='outerHTML')
     if status == 'done':
         url = st['url']
         return _share_toast(
-            Div('Shared', cls='font-semibold'),
+            Div('Shared' + ('' if listed else ' (unlisted)'), cls='font-semibold'),
             fh.A(url, href=url, target='_blank', cls='link text-xs break-all max-w-xs'),
             Div(fh.Button('Copy link', cls='btn btn-xs btn-primary',
                           onclick=f'boopCopyText({json.dumps(url)})'), dismiss, cls='flex gap-2 mt-1'),
@@ -947,20 +968,24 @@ def share_panel() -> FT:
                             poll=True)
     return _share_toast(Div(Span(cls='loading loading-spinner loading-xs mr-2'),
                             Span('Generating sharing site…'), cls='flex items-center'),
-                        Div(st.get('name',''), cls='text-xs opacity-70'), poll=True)
+                        Div(f"{st.get('name','')}{'' if listed else ' · unlisted'}", cls='text-xs opacity-70'),
+                        poll=True)
 
 @rt
-def share_nb() -> FT:
-    "Share the current notebook: save it to disk first (the published page should match what's on screen, and the render reads the file, not the in-memory cells), then render+publish on a background thread -- quarto alone takes several seconds, far too long to hold an HTTP response. Returns the notice immediately so the click visibly does something; it polls itself from there."
+def share_nb(vis:str='public') -> FT:
+    "Share the current notebook, listed on the boops index or not (see share_menu). Saves it to disk first -- the render reads the file, and the published page should match what's on screen -- then publishes on a background thread, since a Quarto render plus a push takes far too long to hold an HTTP response open. Returns the notice immediately so the click visibly does something; it polls itself from there."
     global _share_state
-    path = save_notebook()
-    _share_state = {'status': 'working', 'name': path.name}
-    threading.Thread(target=_share_bg, args=(path,), daemon=True).start()
+    path, listed = save_notebook(), vis != 'unlisted'
+    _share_state = {'status': 'working', 'shown': 'working', 'name': path.name, 'listed': listed}  # 'shown' = what the browser is currently displaying; see share_poll
+    threading.Thread(target=_share_bg, args=(path, listed), daemon=True).start()
     return share_panel()
 
 @rt
-def share_poll() -> FT:
-    "Re-render the share notice while a share is running (see _share_toast's self-polling trigger)."
+def share_poll() -> FT|Response:
+    "Re-render the share notice, but only when its state has actually changed -- otherwise 204 No Content, which tells htmx to swap nothing. With the notice polling on a repeating trigger, that means the element is left completely untouched between state changes, instead of being rebuilt every couple of seconds: rebuilding restarted the spinner and made the whole notice blink."
+    st = _share_state or {}
+    if st.get('status') == st.get('shown'): return Response(status_code=204)
+    st['shown'] = st.get('status')
     return share_panel()
 
 @rt
@@ -1162,8 +1187,7 @@ def top_bar() -> FT:
         *[_plugin_button(pl) for pl in reversed(PLUGINS)],
         tools_menu(icon_cls),
         brain_menu(_TOPBAR_ICON_CLS_LG),
-        fh.Button(Icon('share', cls=_TOPBAR_ICON_CLS_LG), data_tip='Share this notebook', cls=tt_cls,
-                  hx_post=share_nb, hx_target='#share-toast', hx_swap='outerHTML'),
+        share_menu(_TOPBAR_ICON_CLS_LG),
         fh.Button(Icon('question-mark-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Keyboard shortcuts', cls=tt_cls,
                   onclick="document.getElementById('help-modal').showModal()"),
         fh.Button(Icon('x-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Interrupt kernel', cls=tt_cls,
