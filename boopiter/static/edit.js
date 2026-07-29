@@ -241,6 +241,20 @@ function boopWireImageDrop(ta){
     }
   });
 }
+// Same slot and markup the server-side _toast() (cells.py) swaps into for 'Saved', so a copy
+// confirmation looks identical to a save one -- but built here in the browser, because copying
+// never reaches the server (see boopCopy) and a round-trip just to say 'Copied' would be slower
+// than the thing it's confirming. Re-setting innerHTML also restarts the 1.8s timer, so mashing
+// the button repeatedly keeps one notice on screen rather than stacking them.
+function boopToast(msg, ok){
+  var slot = document.getElementById('save-toast');
+  if(!slot) return;
+  var kind = (ok === false) ? 'alert-error' : 'alert-success';
+  slot.innerHTML = '<div class="alert ' + kind + ' shadow-lg text-sm py-2 px-4"></div>';
+  slot.firstChild.textContent = msg;  // textContent, not innerHTML -- msg must never be parsed as markup
+  clearTimeout(window._booptoastt);
+  window._booptoastt = setTimeout(function(){ slot.innerHTML = ''; }, 1800);
+}
 function boopCopy(id, ctype){
   var cm = window['_boopcm_'+id];
   var text;
@@ -249,7 +263,10 @@ function boopCopy(id, ctype){
     var btn = document.getElementById('copy-'+id);
     text = btn ? (btn.getAttribute('data-src') || '') : '';
   }
-  navigator.clipboard.writeText(text).catch(function(){});
+  // Confirm only once the write actually resolves -- the clipboard API can be refused (no permission,
+  // or a non-secure origin), and claiming 'Copied' when nothing was would be worse than staying quiet.
+  navigator.clipboard.writeText(text).then(function(){ boopToast('Copied'); },
+                                          function(){ boopToast('Copy failed', false); });
 }
 function boopRenderAnsi(root){
   if(!window.AnsiUp) return;  // module still loading; a later retry will pick these up
