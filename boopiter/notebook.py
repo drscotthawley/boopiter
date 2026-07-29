@@ -49,6 +49,7 @@ class Notebook:
         self.name = 'untitled'
         self.models = []  # every locally-available LLM (info dicts, see get_model_list())
         self.standard_model, self.reasoning_model = None, None  # 'id' strings (see get_ollama_list()) picked in the brain-icon menu's two dropdowns
+        self.num_ctx = 32768  # context window (tokens) requested from Ollama -- picked in the brain menu (see _num_ctx_control()). Not free: the KV cache is allocated for the whole window, so this is the single biggest lever on how much RAM a loaded model occupies (qwen3-vl:4b at its native 262144 sits at ~46GB; at 32768 it's ~8GB)
         self.keep_alive_min = 0  # minutes Ollama holds a model in memory after it answers, set from the spinner in the brain menu (see _keep_alive_control()). 0 unloads as soon as the reply is done (the default -- see OLLAMA_KEEP_ALIVE_MIN for why); -1 keeps it loaded indefinitely
         self.ollama_ok = True  # did the last model re-listing reach Ollama? (see refresh_models()) -- False greys out the Ollama entries in the brain menu rather than removing them, so a server that's down or restarting can't cost you your current pick
         self.use_reasoning = False  # brain-icon toggle -- which of the two above actually answers Prompt cells; see active_model()
