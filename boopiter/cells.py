@@ -301,6 +301,24 @@ def _finalize_prompt_reply(prompt_id:int, content:str, details:str|None) -> Cell
         nxt = nb.insert_at(i+1, 'assistant', content, model=nb.active_model(), details=details)
     return nxt
 
+# %% ../nbs/05_cells.ipynb #restartprompt1
+def _restart_prompt_reply(c:Cell) -> tuple:
+    "Kick off a fresh LLM run for prompt cell `c`, returning (re-rendered prompt cell, pending-reply placeholder) for a caller targeting '#cell-<c.id>' with outerHTML. Any existing reply is emptied in place -- same Cell, same DOM node id -- and the placeholder OOB-swaps into it, so a re-run replaces the old answer instead of growing a second one; only when there's no reply yet is a new node inserted after the prompt. Shared by both routes that re-answer a prompt (save_cell, after an edit; run_cell, from the play button), which is the point: the two used to differ, and the play button's swap target was additionally computed back when its toolbar was rendered (see cell_toolbar) -- stale the moment a first reply appeared, so pressing play a second time inserted a duplicate reply DOM node alongside the original instead of replacing it."
+    i = nb.index(c.id)
+    nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
+    if nxt is not None and nxt.ctype == 'assistant':
+        # Clear the old reply now, synchronously, rather than letting _finalize_prompt_reply overwrite
+        # it when the new one finishes -- otherwise a stale answer stays on screen for the whole run.
+        nxt.source, nxt.details = '', None
+        pend = pending_prompt_cell(c.id, oob_swap=f'outerHTML:#cell-{nxt.id}')
+    else:
+        # Positional OOB swaps (afterend/beforebegin/beforeend) insert only the tagged element's
+        # *children* -- so pending_prompt_cell must be wrapped, not itself carry the hx-swap-oob attribute,
+        # or its own id/hx-trigger="load" would be discarded on insertion. See _oob().
+        pend = _oob(f'afterend:#cell-{c.id}', pending_prompt_cell(c.id))
+    _start_prompt_run(c.id)
+    return render_cell(c), pend
+
 # %% ../nbs/05_cells.ipynb #623f0a3a
 @rt
 def run_prompt_poll(id:int) -> FT|str:
@@ -494,15 +512,12 @@ def cell_toolbar(c:Cell) -> FT:
         btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
     elif c.ctype == 'prompt':
         # Targeted swap (not the whole #notebook) so re-running a prompt cell mid-notebook doesn't
-        # blow away scroll position: swap the existing Assistant reply if there is one, else insert
-        # a pending placeholder right after this cell.
-        i = nb.index(c.id)
-        nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-        if nxt is not None and nxt.ctype == 'assistant':
-            p_target, p_swap = f'#cell-{nxt.id}', 'outerHTML'
-        else:
-            p_target, p_swap = f'#cell-{c.id}', 'afterend'
-        btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=p_target, hx_swap=p_swap))
+        # blow away scroll position. Always this cell, never the reply's node: where the reply goes
+        # is decided when the button is *pressed* (by _restart_prompt_reply, via an OOB swap), not
+        # here when the toolbar is rendered. Baking it in here meant a prompt whose toolbar was drawn
+        # before it had any reply kept an 'insert after me' target forever -- so the second press
+        # added a duplicate reply next to the first instead of replacing it.
+        btns.append(IconBtn('play', 'Run', hx_post=run_cell.to(id=c.id), hx_target=f'#cell-{c.id}', hx_swap='outerHTML'))
     # Move/delete mutate the DOM out-of-band (see move_cell/del_cell), so these buttons don't
     # need a real hx-target -- swap='none' means htmx applies the response's OOB directives only.
     btns += [
@@ -731,7 +746,7 @@ def _model_select(models:list[dict], active_id:str|None, route) -> FT:
     rows = []
     for m in models:
         active = (m['id'] == active_id)
-        dead = not nb.ollama_ok and m['id'].startswith('ollama/')
+        dead = not nb.ollama_ok and m['id'].startswith(OLLAMA_PREFIX)
         label = [Span('✓' if active else '', cls='inline-block w-3 text-cyan-400'), Span(_model_label(m))]
         cls = 'flex items-center gap-1 py-0.5' + (' font-semibold' if active else '') + (' opacity-40' if dead else '')
         # A greyed row is rendered without its hx_post, so a click is inert -- 'disabled' isn't a
@@ -1337,8 +1352,7 @@ def run_cell(id:int) -> FT:
     if c and c.ctype == 'code':
         return run_code_cell(c)
     elif c and c.ctype == 'prompt':
-        _start_prompt_run(id)
-        return pending_prompt_cell(id)
+        return _restart_prompt_reply(c)  # replaces any existing reply rather than adding a second one -- same path as an edit (save_cell)
     return render_nb()
 
 
@@ -1579,26 +1593,9 @@ def save_cell(id:int, source:str) -> FT|tuple:
     if c.ctype == 'code':
         return run_code_cell(c)
     elif c.ctype == 'prompt':
-        i = nb.index(c.id)
-        nxt = nb.cells[i+1] if i+1 < len(nb.cells) else None
-        if nxt is not None and nxt.ctype == 'assistant':
-            # The edited prompt has answered a question that no longer exists -- clear the old
-            # reply's content right now, synchronously, before starting the new run: same Cell
-            # object, same DOM node id, just emptied. Previously the old content stayed untouched
-            # until _finalize_prompt_reply overwrote it once the new reply finished, so a stale
-            # answer stayed visible (or a second reply could get appended, if anything ever left
-            # nxt looking like a non-assistant cell by finalize time) -- clearing here guarantees
-            # exactly one Cell per prompt throughout, no delete/insert, no window where two answers
-            # coexist.
-            nxt.source, nxt.details = '', None
-            pend = pending_prompt_cell(id, oob_swap=f'outerHTML:#cell-{nxt.id}')
-        else:
-            # Positional OOB swaps (afterend/beforebegin/beforeend) insert only the tagged element's
-            # *children* -- so pending_prompt_cell must be wrapped, not itself carry the hx-swap-oob attribute,
-            # or its own id/hx-trigger="load" would be discarded on insertion. See _oob().
-            pend = _oob(f'afterend:#cell-{c.id}', pending_prompt_cell(id))
-        _start_prompt_run(id)
-        return render_cell(c), pend
+        # The edited prompt has answered a question that no longer exists, so the old reply goes --
+        # see _restart_prompt_reply(), shared with the play button's run_cell().
+        return _restart_prompt_reply(c)
     return render_cell(c)
 
 
