@@ -915,16 +915,19 @@ def _share_bg(path:Path) -> None:
 
 def _share_toast(*kids, kind:str='alert-info', poll:bool=False) -> FT:
     "Wrap the share notice in the same #save-toast slot and DaisyUI alert the 'Saved' notice uses (see _toast), so it lands top-right where you already look for feedback. Unlike _toast it carries no self-clearing Script -- a share notice has to stay put long enough to copy the link out of it -- so it's dismissed by hand instead. `poll` re-requests it while the share is still running."
-    kw = dict(hx_post=share_poll, hx_trigger='load delay:1500ms', hx_target='#save-toast', hx_swap='outerHTML') if poll else {}
+    kw = dict(hx_post=share_poll, hx_trigger='load delay:1500ms', hx_target='#share-toast', hx_swap='outerHTML') if poll else {}
+    # Its own container, NOT the #save-toast slot: a share outlives any number of saves, and sharing
+    # the slot meant hitting S mid-publish wiped the notice (and with it the link you were waiting for).
+    # Offset below the save toast, via inline style since DaisyUI's toast-top pins both to the same edge.
     return Div(Div(*kids, cls=f'alert {kind} shadow-lg text-sm py-2 px-4 flex flex-col items-start gap-1'),
-               id='save-toast', cls='toast toast-top toast-end z-50', **kw)
+               id='share-toast', cls='toast toast-top toast-end z-50', style='top:4.5rem', **kw)
 
 def share_panel() -> FT:
     "The share notice: progress while rendering and publishing, then the published URL with a button to copy it. Persistent -- it stays until dismissed, because its whole job is to leave the link on screen long enough to paste somewhere."
     st = _share_state or {}
     status = st.get('status')
     dismiss = fh.Button('Dismiss', cls='btn btn-xs btn-ghost',
-                        hx_post=share_dismiss, hx_target='#save-toast', hx_swap='outerHTML')
+                        hx_post=share_dismiss, hx_target='#share-toast', hx_swap='outerHTML')
     if status == 'done':
         url = st['url']
         return _share_toast(
@@ -962,8 +965,8 @@ def share_poll() -> FT:
 
 @rt
 def share_dismiss() -> FT:
-    "Close the share notice, leaving the #save-toast slot empty for the next Save or share. Doesn't cancel anything -- an in-flight publish finishes regardless; this only stops showing it."
-    return Div(id='save-toast', cls='toast toast-top toast-end z-50')
+    "Close the share notice, emptying its slot. Doesn't cancel anything -- an in-flight publish finishes regardless; this only stops showing it."
+    return Div(id='share-toast', cls='toast toast-top toast-end z-50', style='top:4.5rem')
 
 # %% ../nbs/05_cells.ipynb #numctxctrl1
 NUM_CTX_CHOICES = (8192, 16384, 32768, 65536, 262144)  # context windows offered in the brain menu. Roughly 360/710/1400/2850/11400 lines of notebook at ~23 tokens per 80-char line; the top entry is qwen3-vl:4b's own advertised maximum, kept as an escape hatch for a genuinely huge context even though it costs ~46GB of KV cache on that model.
@@ -1160,7 +1163,7 @@ def top_bar() -> FT:
         tools_menu(icon_cls),
         brain_menu(_TOPBAR_ICON_CLS_LG),
         fh.Button(Icon('share', cls=_TOPBAR_ICON_CLS_LG), data_tip='Share this notebook', cls=tt_cls,
-                  hx_post=share_nb, hx_target='#save-toast', hx_swap='outerHTML'),
+                  hx_post=share_nb, hx_target='#share-toast', hx_swap='outerHTML'),
         fh.Button(Icon('question-mark-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Keyboard shortcuts', cls=tt_cls,
                   onclick="document.getElementById('help-modal').showModal()"),
         fh.Button(Icon('x-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Interrupt kernel', cls=tt_cls,
@@ -1244,7 +1247,10 @@ def index() -> tuple:
                         style='padding-left: clamp(0.5rem, 4vw, 100px); '
                               'padding-right: calc(clamp(0.5rem, 4vw, 100px) - 4px)'),
                     cls='flex-1 overflow-y-auto'),
-                Div(id='save-toast', cls='toast toast-top toast-end z-50'),  # shared by the Save notice (_toast) and the share notice (share_panel)
+                Div(id='save-toast', cls='toast toast-top toast-end z-50'),
+                # Separate slot from the save toast, offset below it: a share notice persists across
+                # saves, so the two must not evict each other. See _share_toast().
+                Div(id='share-toast', cls='toast toast-top toast-end z-50', style='top:4.5rem'),
                 cls='h-screen flex flex-col'))
 
 # %% ../nbs/05_cells.ipynb #772046af
