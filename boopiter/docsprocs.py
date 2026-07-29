@@ -48,9 +48,13 @@ title: "boops"
 subtitle: "Notebooks shared from [boopiter]({docs})"
 listing:
   contents: "*/index.ipynb"
-  type: default
+  type: grid
+  grid-columns: 3
   sort: "date desc"
-  fields: [title, description, date]
+  # 'image' has to be listed explicitly: fields is a whitelist, and leaving it out suppresses the
+  # thumbnail even though Quarto has already found one -- it derives a preview from the first image in
+  # each document (the same discovery behind og:image), so nothing needs linking by hand.
+  fields: [image, title, description, date]
   date-format: "YYYY-MM-DD"
 ---
 """
