@@ -11,14 +11,14 @@ __all__ = ['daisy_hdrs', 'app', 'rt', 'p', 'BROWSE_ROOT', 'BORDER', 'ICONS', 'NU
            'cell_header', 'cell_body', 'render_output_blocks', 'code_view', 'code_editor', 'render_cell',
            'render_cell_edit', 'render_nb', 'composer', 'render_app', 'theme_swap', 'fname_display', 'rename_form',
            'brain_menu', 'set_standard_model', 'set_reasoning_model', 'toggle_reasoning', 'refresh_models',
-           'set_keep_alive', 'set_num_ctx', 'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal',
-           'help_modal', 'tools_menu', 'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'paste_image',
-           'boopimg', 'tailwind_css', 'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server',
-           'shutdown_server', 'download', 'rename', 'restart_kernel', 'run_all', 'interrupt_kernel',
-           'toggle_tool_source', 'set_type', 'add_cell', 'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis',
-           'toggle_export', 'del_cell', 'move_cell', 'select', 'select_delta', 'insert', 'pull_code_blocks',
-           'del_selected', 'cut_selected', 'copy_selected', 'paste_selected', 'settype_selected', 'set_ctype',
-           'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
+           'set_keep_alive', 'share_panel', 'share_nb', 'share_poll', 'share_dismiss', 'set_num_ctx',
+           'set_reasoning_effort', 'file_menu', 'context_menu', 'file_browser_modal', 'help_modal', 'tools_menu',
+           'plugin_panel_poll', 'top_bar', 'boopiter_ping', 'logo_png', 'paste_image', 'boopimg', 'tailwind_css',
+           'index', 'save_now', 'browse', 'open_file', 'new_notebook', 'restart_server', 'shutdown_server', 'download',
+           'rename', 'restart_kernel', 'run_all', 'interrupt_kernel', 'toggle_tool_source', 'set_type', 'add_cell',
+           'submit_cell', 'split', 'split_cell', 'run_cell', 'toggle_vis', 'toggle_export', 'del_cell', 'move_cell',
+           'select', 'select_delta', 'insert', 'pull_code_blocks', 'del_selected', 'cut_selected', 'copy_selected',
+           'paste_selected', 'settype_selected', 'set_ctype', 'edit_cell', 'view_cell', 'save_cell', 'sync_cell']
 
 # %% ../nbs/05_cells.ipynb #67249157
 import os, shutil, subprocess, sys, threading, time, json, re, signal, secrets
@@ -35,6 +35,7 @@ from .notebook import *  # CTYPES, Cell, Notebook, and the single `nb` instance 
 from .kernel import run_code, _shell, _RunState, _run_code_bg, _collapse_cr  # the execution engine; the underscore names aren't in kernel.__all__ so they're imported explicitly
 from .serialize import *  # save_notebook / load_notebook -- the .ipynb file boundary
 from .llms import *  # get_tool_list, get_model_list, prompt_llm -- generic LLM utilities with no dependency on this module's Notebook/Cell
+from .docsprocs import share_notebook  # render+publish pipeline behind the share button; docsprocs imports nothing from here, so no cycle
 from .llms import _reply_details_html, _PREFERRED_MODEL_SUBSTR  # underscore-prefixed -- not in llms.py's __all__, so import * won't bring them in
 from .plugins import *  # PLUGINS/start_plugins/Plugin -- a leaf module (imports only external libs, never this one), so no circular import; see nbs/03_plugins.ipynb
 
@@ -438,6 +439,7 @@ BORDER = {'raw':'border-warning', 'code':'border-info', 'note':'border-success',
 # one sub-path in its own scaled group (about the 24x24 center) -- used for x-circle/play-circle
 # so their inner glyph can be enlarged without also blowing up the surrounding circle.
 ICONS = {
+    'share':         ('M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z',),
     'copy':          ('M8.25 9V5.25A2.25 2.25 0 0 1 10.5 3h6a2.25 2.25 0 0 1 2.25 2.25v13.5A2.25 2.25 0 0 1 16.5 21h-6a2.25 2.25 0 0 1-2.25-2.25V15m-3 0-3-3m0 0 3-3m-3 3H15',),
     'eye':           ('M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z',
                        'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z'),
@@ -891,6 +893,78 @@ def set_keep_alive(minutes:int=None) -> str:
     if minutes is not None: nb.keep_alive_min = max(-1, int(minutes))
     return ''
 
+# %% ../nbs/05_cells.ipynb #shareui1
+_share_state:dict|None = None  # the one in-flight (or last finished) share: {'status','url','error','name'}. Module-level like _run_state/_prompt_state, since a share is a single background job, not per-cell.
+_SHARE_BUILD_WAIT = 240  # seconds to keep polling the published URL for GitHub Pages to build before giving up on it
+
+def _share_bg(path:Path) -> None:
+    "Background thread body: render + publish (see docsprocs.share_notebook), then wait for the page to actually go live before reporting success. The wait matters -- the push returns in a few seconds but Pages needs about a minute to build, so handing over the link the instant git finishes means the first click is a 404 that looks exactly like a failed share. Falls through to 'done' on timeout anyway rather than claiming failure: the build usually is coming, just slower than we waited. Catches everything, since quarto/gh/git can all fail and a traceback in a daemon thread would otherwise leave the notice spinning forever."
+    import httpx, time as _t
+    try:
+        url = share_notebook(path)
+        _share_state.update(status='building', url=url)
+        deadline = _t.monotonic() + _SHARE_BUILD_WAIT
+        while _t.monotonic() < deadline:
+            try:
+                if httpx.get(url, follow_redirects=True, timeout=10).status_code == 200: break
+            except Exception: pass
+            _t.sleep(3)
+        _share_state.update(status='done')
+    except Exception as e:
+        _share_state.update(status='error', error=f'{type(e).__name__}: {e}')
+
+def _share_toast(*kids, kind:str='alert-info', poll:bool=False) -> FT:
+    "Wrap the share notice in the same #save-toast slot and DaisyUI alert the 'Saved' notice uses (see _toast), so it lands top-right where you already look for feedback. Unlike _toast it carries no self-clearing Script -- a share notice has to stay put long enough to copy the link out of it -- so it's dismissed by hand instead. `poll` re-requests it while the share is still running."
+    kw = dict(hx_post=share_poll, hx_trigger='load delay:1500ms', hx_target='#save-toast', hx_swap='outerHTML') if poll else {}
+    return Div(Div(*kids, cls=f'alert {kind} shadow-lg text-sm py-2 px-4 flex flex-col items-start gap-1'),
+               id='save-toast', cls='toast toast-top toast-end z-50', **kw)
+
+def share_panel() -> FT:
+    "The share notice: progress while rendering and publishing, then the published URL with a button to copy it. Persistent -- it stays until dismissed, because its whole job is to leave the link on screen long enough to paste somewhere."
+    st = _share_state or {}
+    status = st.get('status')
+    dismiss = fh.Button('Dismiss', cls='btn btn-xs btn-ghost',
+                        hx_post=share_dismiss, hx_target='#save-toast', hx_swap='outerHTML')
+    if status == 'done':
+        url = st['url']
+        return _share_toast(
+            Div('Shared', cls='font-semibold'),
+            fh.A(url, href=url, target='_blank', cls='link text-xs break-all max-w-xs'),
+            Div(fh.Button('Copy link', cls='btn btn-xs btn-primary',
+                          onclick=f'boopCopyText({json.dumps(url)})'), dismiss, cls='flex gap-2 mt-1'),
+            kind='alert-success')
+    if status == 'error':
+        return _share_toast(Div('Share failed', cls='font-semibold'),
+                            Div(st.get('error',''), cls='text-xs break-all max-w-xs opacity-80'), dismiss,
+                            kind='alert-error')
+    if status == 'building':
+        return _share_toast(Div(Span(cls='loading loading-spinner loading-xs mr-2'),
+                                Span('Waiting for GitHub Pages to build…'), cls='flex items-center'),
+                            Div('Published; the link goes live shortly.', cls='text-xs opacity-70'),
+                            poll=True)
+    return _share_toast(Div(Span(cls='loading loading-spinner loading-xs mr-2'),
+                            Span('Generating sharing site…'), cls='flex items-center'),
+                        Div(st.get('name',''), cls='text-xs opacity-70'), poll=True)
+
+@rt
+def share_nb() -> FT:
+    "Share the current notebook: save it to disk first (the published page should match what's on screen, and the render reads the file, not the in-memory cells), then render+publish on a background thread -- quarto alone takes several seconds, far too long to hold an HTTP response. Returns the notice immediately so the click visibly does something; it polls itself from there."
+    global _share_state
+    path = save_notebook()
+    _share_state = {'status': 'working', 'name': path.name}
+    threading.Thread(target=_share_bg, args=(path,), daemon=True).start()
+    return share_panel()
+
+@rt
+def share_poll() -> FT:
+    "Re-render the share notice while a share is running (see _share_toast's self-polling trigger)."
+    return share_panel()
+
+@rt
+def share_dismiss() -> FT:
+    "Close the share notice, leaving the #save-toast slot empty for the next Save or share. Doesn't cancel anything -- an in-flight publish finishes regardless; this only stops showing it."
+    return Div(id='save-toast', cls='toast toast-top toast-end z-50')
+
 # %% ../nbs/05_cells.ipynb #numctxctrl1
 NUM_CTX_CHOICES = (8192, 16384, 32768, 65536, 262144)  # context windows offered in the brain menu. Roughly 360/710/1400/2850/11400 lines of notebook at ~23 tokens per 80-char line; the top entry is qwen3-vl:4b's own advertised maximum, kept as an escape hatch for a genuinely huge context even though it costs ~46GB of KV cache on that model.
 
@@ -1085,6 +1159,8 @@ def top_bar() -> FT:
         *[_plugin_button(pl) for pl in reversed(PLUGINS)],
         tools_menu(icon_cls),
         brain_menu(_TOPBAR_ICON_CLS_LG),
+        fh.Button(Icon('share', cls=_TOPBAR_ICON_CLS_LG), data_tip='Share this notebook', cls=tt_cls,
+                  hx_post=share_nb, hx_target='#save-toast', hx_swap='outerHTML'),
         fh.Button(Icon('question-mark-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Keyboard shortcuts', cls=tt_cls,
                   onclick="document.getElementById('help-modal').showModal()"),
         fh.Button(Icon('x-circle', cls=_TOPBAR_ICON_CLS_LG), data_tip='Interrupt kernel', cls=tt_cls,
@@ -1168,7 +1244,7 @@ def index() -> tuple:
                         style='padding-left: clamp(0.5rem, 4vw, 100px); '
                               'padding-right: calc(clamp(0.5rem, 4vw, 100px) - 4px)'),
                     cls='flex-1 overflow-y-auto'),
-                Div(id='save-toast', cls='toast toast-top toast-end z-50'),
+                Div(id='save-toast', cls='toast toast-top toast-end z-50'),  # shared by the Save notice (_toast) and the share notice (share_panel)
                 cls='h-screen flex flex-col'))
 
 # %% ../nbs/05_cells.ipynb #772046af

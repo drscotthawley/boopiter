@@ -255,6 +255,11 @@ function boopToast(msg, ok){
   clearTimeout(window._booptoastt);
   window._booptoastt = setTimeout(function(){ slot.innerHTML = ''; }, 1800);
 }
+// Copy an arbitrary string (the share panel's URL) with the same confirmation as boopCopy.
+function boopCopyText(text){
+  navigator.clipboard.writeText(text).then(function(){ boopToast('Copied'); },
+                                          function(){ boopToast('Copy failed', false); });
+}
 function boopCopy(id, ctype){
   var cm = window['_boopcm_'+id];
   var text;
