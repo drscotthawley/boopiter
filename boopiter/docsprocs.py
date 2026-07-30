@@ -105,13 +105,40 @@ def _write_project_config(proc:Path, out:Path) -> None:
         site['favicon'] = 'logo.png'
     (out/'_quarto.yml').write_text(yaml.safe_dump(cfg, sort_keys=False))
 
+_CRED_HELPER = 'credential.https://github.com.helper'   # lets gh hand git its token; see _ensure_git_repo
+
+def _ensure_git_repo() -> None:
+    "Give SHARE_PROJECT what `quarto publish gh-pages` needs of a local repo: the repo itself, the share remote, a commit identity, and a credential to push with. Every step is keyed on what is actually missing and is safe to repeat, so a share that dies halfway through setup is repaired by the next one instead of poisoning it. What this replaces ran the whole bootstrap only when the project directory didn't exist -- a condition `mkdir` invalidates two lines later, so anything failing after that point (gh not logged in yet, most likely) left a directory with no repo inside it, and every later share then saw the directory, skipped setup, and died deep inside quarto with 'not a git repository', which points at nothing. Identity and credential go in the repo's own config, and only when git can't already answer for itself, so a configured ~/.gitconfig still wins: quarto shells out to git on its own, so there is no handing it `-c` overrides, and a freshly installed machine has neither an identity (the commit fails outright) nor any way to authenticate the https push."
+    owner = _gh_owner()
+    g = ['git', '-C', str(SHARE_PROJECT)]
+    if subprocess.run(['gh', 'repo', 'view', f'{owner}/{SHARE_REPO}'], capture_output=True).returncode:
+        subprocess.run(['gh', 'repo', 'create', f'{owner}/{SHARE_REPO}', '--public',
+                        '-d', 'Notebooks shared from boopiter'], capture_output=True, timeout=60, check=True)
+    if not (SHARE_PROJECT/'.git').is_dir():
+        subprocess.run(g + ['init', '-q', '-b', 'main'], check=True, timeout=60)
+    # add first, then set-url: `add` fails once origin exists, which is every run after the first, while
+    # a remote left pointing somewhere stale would quietly publish the site to the wrong repo.
+    url = f'https://github.com/{owner}/{SHARE_REPO}.git'
+    subprocess.run(g + ['remote', 'add', 'origin', url], capture_output=True, timeout=60)
+    subprocess.run(g + ['remote', 'set-url', 'origin', url], capture_output=True, timeout=60)
+    # `git var` resolves an identity from config or environment and exits non-zero when there is none to
+    # find -- a better test than reading user.email, since an identity can come from either.
+    if subprocess.run(g + ['var', 'GIT_COMMITTER_IDENT'], capture_output=True).returncode:
+        subprocess.run(g + ['config', 'user.name', owner], check=True, timeout=60)
+        subprocess.run(g + ['config', 'user.email', f'{owner}@users.noreply.github.com'], check=True, timeout=60)
+    # The remote is https, so the push needs a github.com credential. gh already holds one and can serve
+    # it as a helper, which makes an authenticated gh the only requirement -- no `gh auth setup-git` step
+    # for the user to have missed, and nothing written outside this repo.
+    if not subprocess.run(g + ['config', '--get', _CRED_HELPER], capture_output=True).stdout.strip():
+        subprocess.run(g + ['config', _CRED_HELPER, '!gh auth git-credential'], check=True, timeout=60)
+    _ensure_gh_pages_branch(owner)
+
 def _ensure_share_project() -> Path:
     "The local Quarto project every share is rendered inside, created on first use. One project rather than a throwaway per share is the whole point: Quarto then emits a single site_libs (Bootstrap, theme CSS, its JS) and one favicon for the site, instead of a ~2MB copy per notebook. It's a git repo with the share repo as its remote, because that's what `quarto publish gh-pages` pushes through -- but only the rendered _site is ever published, so notebook sources stay on this machine."
     import yaml
     proc = _repo_root()/'_proc'
     if not (proc/'_quarto.yml').exists():
         raise RuntimeError(f'{proc}/_quarto.yml not found -- run nbdev_docs once so the docs config exists')
-    first = not SHARE_PROJECT.exists()
     SHARE_PROJECT.mkdir(parents=True, exist_ok=True)
     # Assets come from nbs/, the source of truth -- _proc holds copies that only refresh when the docs
     # are rebuilt, so taking them from there meant a theme edit didn't reach a share until then.
@@ -124,15 +151,7 @@ def _ensure_share_project() -> Path:
     _write_project_config(proc, SHARE_PROJECT)
     (SHARE_PROJECT/'index.qmd').write_text(_INDEX_QMD.format(docs=docs_url or ''))
     (SHARE_PROJECT/'.gitignore').write_text('_site/\n_docs/\n_freeze/\n.quarto/\n')
-    if first:
-        owner = _gh_owner()
-        if subprocess.run(['gh', 'repo', 'view', f'{owner}/{SHARE_REPO}'], capture_output=True).returncode:
-            subprocess.run(['gh', 'repo', 'create', f'{owner}/{SHARE_REPO}', '--public',
-                            '-d', 'Notebooks shared from boopiter'], capture_output=True, timeout=60, check=True)
-        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=SHARE_PROJECT, check=True, timeout=60)
-        subprocess.run(['git', 'remote', 'add', 'origin', f'https://github.com/{owner}/{SHARE_REPO}.git'],
-                       cwd=SHARE_PROJECT, capture_output=True, timeout=60)
-        _ensure_gh_pages_branch(owner)
+    _ensure_git_repo()
     return SHARE_PROJECT
 
 def _ensure_gh_pages_branch(owner:str) -> None:
