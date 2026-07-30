@@ -27,7 +27,7 @@ def color_cells(cell):
 
 
 # %% ../nbs/07_docsprocs.ipynb #sharepipe1
-import hashlib, json, os, shutil, socket, subprocess, tempfile, textwrap
+import hashlib, json, os, shutil, socket, subprocess, tempfile
 from datetime import date
 from pathlib import Path
 
@@ -43,15 +43,25 @@ SHARE_PROJECT = (Path.home()/'github'/SHARE_REPO) if (Path.home()/'github').is_d
 # theme-toggle.html + styles.css are what give a page boopiter's sun/moon toggle and coloured cell
 # bars, and they only stay in step with the docs site by being the same files.
 _SHARE_ASSETS = ('styles.css', 'booptheme.scss', 'theme-toggle.html')
-# Card metadata for one published page, left beside it on gh-pages. That branch is the only thing two
-# machines have in common -- notebook sources never leave the machine that made them -- so this is how a
-# machine puts a page it cannot render onto the index. See _remote_shares and _index_contents.
+# Card metadata for one published page, left beside it on gh-pages, where the build-index workflow reads
+# it. Carries `listed` because nothing in a rendered page distinguishes a public share from an unlisted
+# one -- the og: tags are identical either way -- and its absence means unlisted, so a lost sidecar fails
+# closed rather than exposing a page. Title/date/description come from here rather than being scraped, and
+# only the thumbnail is left to CI, which takes it from the og:image Quarto already resolved.
 _SIDECAR = 'share.json'
+# Render inputs for the index, published to gh-pages under a dot-directory so CI can rebuild the index
+# with this machine's theme without a boopiter checkout. Dot-prefixed deliberately: Quarto skips such
+# paths when discovering a project's inputs, so shipping the config inside the project can't make the
+# local render try to treat it as a document.
+_INDEX_SRC = '.index-src'
+# Root files the index owns. Excluded from what a share publishes, since a machine renders them from only
+# its own shares -- publishing them is exactly how the index used to lose every page made elsewhere.
+_CI_OWNED = ('index.html', 'index.md', 'listings.json', 'search.json', 'sitemap.xml', 'robots.txt')
 _INDEX_QMD = """---
 title: "boops"
 subtitle: "Notebooks shared from [boopiter]({docs})"
 listing:
-  contents:{contents}
+  contents: "*/index.ipynb"
   type: grid
   grid-columns: 3
   sort: "date desc"
@@ -150,7 +160,7 @@ def _ensure_share_project() -> Path:
         src = nbs/a if (nbs/a).exists() else proc/a
         if src.exists(): shutil.copy(src, SHARE_PROJECT/a)
     _write_project_config(proc, SHARE_PROJECT)
-    _write_index(SHARE_PROJECT, {})   # rewritten with the gh-pages union before each render; see share_notebook
+    _write_index(SHARE_PROJECT)   # NOT the published index -- CI builds that; see _write_index
     # Nothing here is ever committed -- the branch we publish to is built by _publish_additive, and the
     # notebook sources sitting in this project are exactly what must not be pushed anywhere. The list
     # covers Quarto's byproducts too (keep-md output, the listing cache) so a stray `git add -A` in here
@@ -204,61 +214,24 @@ def _docs_url() -> str:
     meta = yaml.safe_load((proc/'nbdev.yml').read_text()) if (proc/'nbdev.yml').exists() else {}
     return (meta.get('website') or {}).get('site-url') or ''
 
-def _remote_shares(proj:Path) -> dict:
-    "Every listed page already on gh-pages, as name -> card metadata, read from the `share.json` each publish leaves beside its page. This is what makes the site independent of which machine published it: the branch accumulates rendered pages from everywhere, and this reads back enough about the ones made elsewhere to keep them on the index. Reads through `git show` rather than a checkout, so nothing touches the working tree. An absent branch or unparseable sidecar yields nothing rather than raising -- the first share ever has no branch to read, and a page whose metadata can't be read is better dropped from the index than fatal to the publish."
-    g = ['git', '-C', str(proj)]
-    if subprocess.run(g + ['fetch', '-q', 'origin', 'gh-pages'], capture_output=True, timeout=180).returncode: return {}
-    r = subprocess.run(g + ['ls-tree', '-r', '--name-only', 'FETCH_HEAD'], capture_output=True, text=True, timeout=60)
-    out = {}
-    for p in r.stdout.splitlines():
-        if not p.endswith(f'/{_SIDECAR}') or p.count('/') != 1: continue
-        j = subprocess.run(g + ['show', f'FETCH_HEAD:{p}'], capture_output=True, text=True, timeout=60)
-        if j.returncode: continue
-        try: out[p.split('/')[0]] = json.loads(j.stdout)
-        except ValueError: continue
-    return out
+def _write_index(proj:Path) -> None:
+    "Write the local index page: a plain listing over the shares this machine can render. Deliberately NOT the index that gets published -- see _publish_additive, which excludes it. It exists so the project renders as a valid Quarto site (and so `quarto preview` here shows something sensible); the published index is built by the build-index workflow from every page on the branch, which is the only vantage point that sees all of them."
+    (proj/'index.qmd').write_text(_INDEX_QMD.format(docs=_docs_url()))
 
-def _index_contents(remote:dict) -> str:
-    "The listing's `contents:` block: a glob over the shares this machine can render, plus one inline entry per page that only exists on gh-pages. Quarto lets a listing item be given inline with its own metadata instead of being discovered from a file, which is the one mechanism that can put a card on the index for a page there is no local source for -- the alternative, a stub document, would render over the real page and replace it with the stub."
-    import yaml
-    items = [dict(path=f'{n}/', **{k: m[k] for k in ('title', 'description', 'date', 'image') if m.get(k)})
-             for n, m in sorted(remote.items())]
-    body = '\n    - "*/index.ipynb"'
-    if items: body += '\n' + textwrap.indent(yaml.safe_dump(items, sort_keys=False, allow_unicode=True).rstrip(), '    ')
-    return body
+def _write_index_src(proj:Path, site:Path) -> None:
+    "Copy the index's render inputs into the published site under _INDEX_SRC, so CI can rebuild the index with the same theme this machine renders with. The alternative -- teaching the workflow to generate a config -- would mean a second copy of the theme wiring that could drift from _write_project_config's; this way the config CI renders with is literally the one produced here."
+    d = site/_INDEX_SRC
+    d.mkdir(parents=True, exist_ok=True)
+    for f in ('_quarto.yml', 'index.qmd') + _SHARE_ASSETS:
+        if (proj/f).exists(): shutil.copy(proj/f, d/f)
 
-def _write_index(proj:Path, remote:dict) -> None:
-    "Write the share site's index page, listing this machine's shares alongside the pages that exist only on gh-pages (see _index_contents). Dropping the ones this machine can render is the whole job of the filter, and it is not optional: a share made here is found by the listing's own glob and also has a sidecar on the branch from the publish that put it there, so any name left in `remote` that has a local source draws a second, identical card. That is what happened the first time a second machine published -- one notebook, two cards."
-    local = {d.name for d in proj.iterdir() if (d/'index.ipynb').exists()}
-    (proj/'index.qmd').write_text(_INDEX_QMD.format(
-        docs=_docs_url(), contents=_index_contents({n: m for n, m in remote.items() if n not in local})))
+def _trigger_index_build(owner:str) -> None:
+    "Ask GitHub to rebuild the index now that this share is on the branch. Dispatched explicitly rather than triggered by the push itself: a workflow that runs on `push` has to live on the branch that was pushed, which would put .github/workflows in among the published site. Best-effort -- a failed dispatch leaves the page live but the index a share behind, which the next share (or a manual run) fixes, and is not worth failing a publish that already succeeded over."
+    subprocess.run(['gh', 'workflow', 'run', 'build-index.yml', '-R', f'{owner}/{SHARE_REPO}'],
+                   capture_output=True, timeout=60)
 
-def _publish_additive(proj:Path, add:dict, drop:set) -> None:
-    "Push the rendered _site onto gh-pages without deleting anything already there. `quarto publish gh-pages` cannot be used for this: it runs `git rm -r .` inside its worktree before copying the render in, so the branch ends up as exactly one machine's _site and every page published from anywhere else is destroyed. Here the worktree starts from the existing branch and the render is copied over the top, so a publish only ever adds or replaces its own directories. `add` carries the sidecars to write (the pages this run published, if listed); `drop` names the ones to delete, which is how a page flipped from public to unlisted stops appearing on other machines' indexes -- a copy alone can never remove a file. A worktree, not a checkout, so the project's own tree is untouched; a temp dir outside the project, so a stray render can't sweep it into the site."
-    site = proj/'_site'
-    for name, m in add.items():
-        (site/name).mkdir(parents=True, exist_ok=True)
-        (site/name/_SIDECAR).write_text(json.dumps(m, ensure_ascii=False))
-    (site/'.nojekyll').touch()   # GitHub Pages serves the site as-is instead of running Jekyll over it
-    g = ['git', '-C', str(proj)]
-    subprocess.run(g + ['fetch', '-q', 'origin', 'gh-pages'], capture_output=True, timeout=180, check=True)
-    tmp = Path(tempfile.mkdtemp(prefix='boop-publish-'))
-    wt  = tmp/'gh-pages'         # a path that doesn't exist yet: `worktree add` refuses an existing dir
-    subprocess.run(g + ['worktree', 'add', '-q', '--detach', str(wt), 'FETCH_HEAD'], check=True, timeout=120)
-    try:
-        shutil.copytree(site, wt, dirs_exist_ok=True)      # copies over, deletes nothing
-        w = ['git', '-C', str(wt)]
-        for name in drop: subprocess.run(w + ['rm', '-q', '--ignore-unmatch', f'{name}/{_SIDECAR}'], timeout=60)
-        subprocess.run(w + ['add', '-Af', '.'], check=True, timeout=180)
-        what = ', '.join(sorted(add or drop)) or 'index'   # neither: a re-render to refresh the index alone
-        subprocess.run(w + ['commit', '-q', '--allow-empty', '-m', f'Publish {what}'], check=True, timeout=120)
-        subprocess.run(w + ['push', '-q', 'origin', 'HEAD:gh-pages'], check=True, timeout=300)
-    finally:
-        subprocess.run(g + ['worktree', 'remove', '--force', str(wt)], capture_output=True, timeout=60)
-        shutil.rmtree(tmp, ignore_errors=True)
-
-def _write_share(nb_path, listed:bool, images_dir=None) -> tuple:
-    "Put the processed notebook into the share project as <name>/index.ipynb, with a sibling _metadata.yml carrying its listed/unlisted state. Uses Quarto's per-directory metadata (the same mechanism a Quarto blog uses for posts/_metadata.yml) rather than injecting front matter, so the notebook itself is never rewritten and flipping public<->unlisted is a one-line file change. The title needs nothing: Quarto takes an .ipynb's title from its first '# ' heading, and color_cells deliberately leaves that H1 cell alone. Returns the share's directory name, and the card metadata another machine needs to list this page without ever seeing the notebook (see _SIDECAR)."
+def _write_share(nb_path, listed:bool, images_dir=None) -> str:
+    "Put the processed notebook into the share project as <name>/index.ipynb, with a sibling _metadata.yml carrying its listed/unlisted state. Uses Quarto's per-directory metadata (the same mechanism a Quarto blog uses for posts/_metadata.yml) rather than injecting front matter, so the notebook itself is never rewritten and flipping public<->unlisted is a one-line file change. The title needs nothing: Quarto takes an .ipynb's title from its first '# ' heading, and color_cells deliberately leaves that H1 cell alone. Returns the share's directory name."
     import nbformat
     name = share_name(nb_path)
     d = SHARE_PROJECT/name
@@ -269,16 +242,13 @@ def _write_share(nb_path, listed:bool, images_dir=None) -> tuple:
     titles = [c.source.lstrip()[2:].splitlines()[0].strip() for c in doc.cells
               if c.cell_type == 'markdown' and c.source.lstrip().startswith('# ')]
     desc = _pop_description(doc)   # also strips the line, so it isn't rendered twice
-    img = None
     for c in doc.cells:
         # A pasted image is stored as /boopimg/<name>, a URL only a running boopiter can serve, so it
         # 404s on a shared page. Copy each referenced file in beside the notebook and point the
         # markdown at the bare name, which Quarto then treats as a resource and publishes with it.
         if c.cell_type == 'markdown' and images_dir:
-            for n in dict.fromkeys(_BOOPIMG_RE.findall(c.source)):   # ordered, so the first is the thumbnail
-                if (images_dir/n).exists():
-                    shutil.copy(images_dir/n, d/n)
-                    if img is None: img = n
+            for n in set(_BOOPIMG_RE.findall(c.source)):
+                if (images_dir/n).exists(): shutil.copy(images_dir/n, d/n)
             c.source = _BOOPIMG_RE.sub(lambda m: m.group(1) if (images_dir/m.group(1)).exists() else m.group(0),
                                        c.source)
         color_cells(c)
@@ -296,23 +266,51 @@ def _write_share(nb_path, listed:bool, images_dir=None) -> tuple:
     # Dumped rather than hand-formatted: a description is arbitrary prose and can hold quotes, colons
     # or backticks that would otherwise need escaping by hand to stay valid YAML.
     (d/'_metadata.yml').write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True))
-    # The card other machines will draw for this page (see _SIDECAR). The same facts as _metadata.yml, but
-    # resolved rather than left to Quarto: the title it would infer from the H1, and an image path relative
-    # to the site root rather than to the document, since an inline listing entry is read from the index.
+    # Stash the card facts beside the notebook, for _publish_additive to write into the sidecar once the
+    # render has happened. Resolved here rather than scraped from the page later because this is where the
+    # title Quarto would infer from the H1 is already known. No image: that is Quarto's own first-image
+    # discovery, read from the rendered page's og:image by the workflow -- an earlier version guessed at it
+    # from pasted /boopimg files and so found nothing for a notebook whose images are plot outputs.
     card = {'title': titles[0] if titles else Path(nb_path).stem, 'date': meta['date']}
     if desc: card['description'] = desc
-    if img: card['image'] = f'{name}/{img}'
-    return name, card
+    (d/'.card.json').write_text(json.dumps(card, ensure_ascii=False))
+    return name
+
+def _share_card(proj:Path, name:str) -> dict:
+    "The card facts _write_share stashed for this share (see there)."
+    p = proj/name/'.card.json'
+    return json.loads(p.read_text()) if p.exists() else {}
+
+def _publish_additive(proj:Path, name:str, listed:bool, owner:str) -> None:
+    "Push this share's page onto gh-pages without disturbing anything else there. `quarto publish gh-pages` cannot be used: it runs `git rm -r .` inside its worktree before copying the render in, so the branch ended up as exactly one machine's _site and every page published from anywhere else was destroyed. Here the worktree starts from the existing branch and only this share's directory, the shared assets and the index's render inputs are copied over the top -- the root files the index owns are left alone entirely (see _CI_OWNED), because a locally rendered index knows only about local shares. A worktree, not a checkout, so the project's own tree is untouched; a temp dir outside the project, so a stray render can't sweep it into the site."
+    site = proj/'_site'
+    (site/name/_SIDECAR).write_text(json.dumps(dict(listed=listed, **_share_card(proj, name)), ensure_ascii=False))
+    _write_index_src(proj, site)
+    (site/'.nojekyll').touch()   # GitHub Pages serves the site as-is instead of running Jekyll over it
+    g = ['git', '-C', str(proj)]
+    subprocess.run(g + ['fetch', '-q', 'origin', 'gh-pages'], capture_output=True, timeout=180, check=True)
+    tmp = Path(tempfile.mkdtemp(prefix='boop-publish-'))
+    wt  = tmp/'gh-pages'         # a path that doesn't exist yet: `worktree add` refuses an existing dir
+    subprocess.run(g + ['worktree', 'add', '-q', '--detach', str(wt), 'FETCH_HEAD'], check=True, timeout=120)
+    try:
+        for p in site.iterdir():
+            if p.name in _CI_OWNED: continue
+            if p.is_dir() and p.name != name and p.name not in (_INDEX_SRC, 'site_libs'): continue
+            (shutil.copytree(p, wt/p.name, dirs_exist_ok=True) if p.is_dir() else shutil.copy(p, wt/p.name))
+        w = ['git', '-C', str(wt)]
+        subprocess.run(w + ['add', '-Af', '.'], check=True, timeout=180)
+        subprocess.run(w + ['commit', '-q', '--allow-empty', '-m', f'Publish {name}'], check=True, timeout=120)
+        subprocess.run(w + ['push', '-q', 'origin', 'HEAD:gh-pages'], check=True, timeout=300)
+    finally:
+        subprocess.run(g + ['worktree', 'remove', '--force', str(wt)], capture_output=True, timeout=60)
+        shutil.rmtree(tmp, ignore_errors=True)
+    _trigger_index_build(owner)
 
 def share_notebook(nb_path, listed:bool=True, images_dir=None) -> str:
-    "Render `nb_path` into the share site and publish it, returning the public URL. `listed` puts it on the site's index; unlisted pages are still rendered and reachable by URL, just not indexed -- and re-sharing with the other choice flips that, since the state lives in a file that gets rewritten. Overwrites in place: the directory is named from the notebook's identity (see share_slug), so a correction updates the page a recipient already has the link to. Renders locally and pushes only the built site to the gh-pages branch, which is why notebook sources never leave this machine. The push is ours rather than `quarto publish gh-pages` because that command clears the branch before copying its render in, which deletes every page published from a different machine; see _publish_additive. Pages made elsewhere are read back off the branch and listed beside this machine's, so the site reads the same no matter which machine published last, and publishing only ever adds -- see _remote_shares. Returns as soon as the push lands; GitHub Pages then takes roughly a minute to rebuild."
-    proj   = _ensure_share_project()
-    remote = _remote_shares(proj)
-    name, card = _write_share(nb_path, listed, images_dir)
-    _write_index(proj, remote)   # drops everything renderable here, this share included, so no page is listed twice
+    "Render `nb_path` into the share site and publish it, returning the public URL. `listed` puts it on the site's index; unlisted pages are still rendered and reachable by URL, just not indexed -- and re-sharing with the other choice flips that, since the state lives in a file that gets rewritten. Overwrites in place: the directory is named from the notebook's identity (see share_slug), so a correction updates the page a recipient already has the link to. Renders locally and pushes only the built site to the gh-pages branch, which is why notebook sources never leave this machine. The push is ours rather than `quarto publish gh-pages` because that command clears the branch before copying its render in, which deletes every page published from a different machine; see _publish_additive. The index is not published from here at all: it is rebuilt by the build-index workflow from every page on the branch, which is the only vantage point that sees shares from every machine -- so the site reads the same no matter which machine published last, and publishing only ever adds. Returns as soon as the push lands; GitHub Pages then takes roughly a minute to rebuild."
+    proj  = _ensure_share_project()
+    owner = _gh_owner()
+    name  = _write_share(nb_path, listed, images_dir)
     subprocess.run(['quarto', 'render'], cwd=proj, capture_output=True, timeout=900, check=True)
-    # An unlisted share publishes its page but no sidecar, and drops any sidecar a previous public share of
-    # the same notebook left behind -- otherwise flipping public -> unlisted would keep the card on every
-    # other machine's index, which is the one thing unlisted is supposed to prevent.
-    _publish_additive(proj, {name: card} if listed else {}, set() if listed else {name})
-    return f'https://{_gh_owner()}.github.io/{SHARE_REPO}/{name}/'
+    _publish_additive(proj, name, listed, owner)
+    return f'https://{owner}.github.io/{SHARE_REPO}/{name}/'

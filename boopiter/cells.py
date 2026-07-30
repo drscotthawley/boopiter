@@ -141,7 +141,16 @@ def _check_auth(req, session):
 
 
 # %% ../nbs/05_cells.ipynb #74163e30
-app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'}, before=Beforeware(_check_auth, skip=_AUTH_SKIP))
+# session_cookie/key_fname are overridden because FastHTML's defaults lose the login twice over, in ways
+# that look exactly like the token having changed when it hasn't. Cookies are scoped by host and ignore
+# port, so every FastHTML app reached as localhost -- which under SSH port forwarding is all of them --
+# shares one cookie jar and the default name 'session_', each overwriting the last. And .sesskey is read
+# from the launch directory, so starting boopiter from somewhere else signs with a different secret and
+# the surviving cookie no longer verifies; _check_auth then falls through to the login page even though
+# BOOPITER_TOKEN survived the restart untouched. A name of our own plus one fixed key under $HOME leaves
+# the session immune to both. Changing either invalidates existing cookies once, by design.
+app = FastHTML(hdrs=daisy_hdrs, htmlkw={'data-theme':'dark'}, before=Beforeware(_check_auth, skip=_AUTH_SKIP),
+               session_cookie='boopiter_', key_fname=str(Path.home()/'.boopiter-sesskey'))
 rt  = app.route
 p   = partial(HTMX, app=app, host=None, port=None)
 
