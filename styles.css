@@ -1,0 +1,84 @@
+.cell {
+  margin-bottom: 1rem;
+}
+
+.cell > .sourceCode {
+  margin-bottom: 0;
+}
+
+.cell-output > pre {
+  margin-bottom: 0;
+}
+
+.cell-output > pre, .cell-output > .sourceCode > pre, .cell-output-stdout > pre {
+  margin-left: 0.8rem;
+  margin-top: 0;
+  background: none;
+  border-left: 2px solid lightsalmon;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.cell-output > .sourceCode {
+  border: none;
+}
+
+.cell-output > .sourceCode {
+  background: none;
+  margin-top: 0;
+}
+
+/* Plain code output (print()/stdout, stderr, text reprs) has no syntax-highlight
+   spans, so it inherits the default near-black text -- invisible on the dark
+   base-100 page. In DARK mode only, force a light grey; light mode keeps the
+   normal dark-on-white text. Quarto puts .quarto-dark on <body> for the dark
+   theme. Excludes .sourceCode so dracula-highlighted output keeps its tokens. */
+.quarto-dark .cell-output-stdout > pre, .quarto-dark .cell-output-stderr > pre,
+.quarto-dark .cell-output-display pre:not(.sourceCode) {
+  color: #c7ccd1;
+}
+
+/* Plain (unhighlighted) fenced code blocks -- ``` with no language tag, e.g. in guide.ipynb --
+   render as bare <pre><code>, not Pandoc's syntax-highlighted .sourceCode wrapper. Bootstrap's
+   default `pre` rule hardcodes color:#000 on a light-grey background, independent of theme --
+   our $code-block-bg/highlight-style work only covers .sourceCode, so these never got themed
+   and read as black-on-dark. :not(.sourceCode) leaves real (highlighted) code blocks alone. */
+.quarto-dark pre:not(.sourceCode) {
+  color: #ecf9ff;
+  background-color: #282a36;
+}
+
+div.description {
+  padding-left: 2px;
+  padding-top: 5px;
+  font-style: italic;
+  font-size: 135%;
+  opacity: 70%;
+}
+
+/* boopiter sun/moon theme toggle: theme-toggle.html injects both SVGs into Quarto's
+   own color-scheme toggle; Quarto adds `.alternate` to that toggle in dark mode.
+   Show the moon in dark (alternate), the sun in light -- matching boopiter's swap. */
+.quarto-color-scheme-toggle .bi { display: none; }
+.quarto-color-scheme-toggle svg {
+  width: 1.5rem; height: 1.5rem;   /* ~1.3x the original 1.15rem, to match Quarto's other navbar icons */
+  fill: currentColor;
+  vertical-align: -0.24em;
+  position: relative; top: 2px;    /* nudge down to line up with the search magnifier */
+}
+.quarto-color-scheme-toggle .boop-moon { display: none; }
+.quarto-color-scheme-toggle.alternate .boop-sun { display: none; }
+.quarto-color-scheme-toggle.alternate .boop-moon { display: inline-block; }
+
+/* Cell type color-coding, echoing boopiter's colored left bars. The docsprocs.color_cells
+   processor (doc_procs) wraps each markdown/raw cell in .boopcell + a type class; code cells
+   already have .cell-code. Colors are DaisyUI dark's semantic tokens, matching BORDER in cells.py:
+   note=success, prompt=error, raw=warning, code=info. */
+.boopcell { border-left: 4px solid transparent; padding-left: 0.75rem; }
+.boop-note   { border-left-color: #00d390; }  /* success -- markdown notes  */
+.boop-prompt { border-left-color: #ff627d; }  /* error   -- prompt cells    */
+.boop-raw    { border-left-color: #fcb700; }  /* warning -- raw cells       */
+div.sourceCode.cell-code { border-left: 4px solid #00bafe; }  /* info -- code cells */
+/* Indent the LLM reply within a prompt cell, echoing boopiter's `ml-8` on assistant cells.
+   The reply is the `##### 🤖Reply🤖` section (h5 -> .level5, id starts "reply"). */
+.boop-prompt section[id^="reply"] { margin-left: 2rem; }

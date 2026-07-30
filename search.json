@@ -1,0 +1,532 @@
+[
+  {
+    "objectID": "plugins.html",
+    "href": "plugins.html",
+    "title": "plugins",
+    "section": "",
+    "text": "# quick sanity check (does NOT start the sampler thread -- that only happens via on_start())\nassert any(isinstance(p, SystemMonitor) for p in PLUGINS), \"SystemMonitor should auto-register\"\nsm = next(p for p in PLUGINS if isinstance(p, SystemMonitor))\nsm.cpu.extend([12, 34, 56, 30]); sm.ram.extend([40, 42, 41])\nsm.gpu.extend([0, 5, 80]); sm.vram.extend([20, 21, 55])\npanel = sm.render()             # should not raise\nspark = _sparkline([10, 90, 50])\nassert 'polyline' in to_xml(spark).lower()\nassert 'System monitor' in to_xml(panel)\nprint('registered plugins:', [p.name for p in PLUGINS])\nprint('_gpu_sample() -&gt;', _gpu_sample())  # None if no nvidia-smi on this box; a (util%, vram%) tuple otherwise\nprint('_gpu_sample_darwin() -&gt;', _gpu_sample_darwin())  # None off macOS or if ioreg has no AGXAccelerator; a bare util% otherwise",
+    "crumbs": [
+      "plugins"
+    ]
+  },
+  {
+    "objectID": "plugins.html#the-plugin-protocol",
+    "href": "plugins.html#the-plugin-protocol",
+    "title": "plugins",
+    "section": "The plugin protocol",
+    "text": "The plugin protocol\nPlugin is the base class: subclass it, set name/icon/trigger, and implement render() for the hover popup (plus an optional always-on background task). register is a class decorator that adds an instance to PLUGINS; start_plugins kicks off each one’s background task at server startup.",
+    "crumbs": [
+      "plugins"
+    ]
+  },
+  {
+    "objectID": "plugins.html#the-system-monitor-plugin",
+    "href": "plugins.html#the-system-monitor-plugin",
+    "title": "plugins",
+    "section": "The system-monitor plugin",
+    "text": "The system-monitor plugin\nThe first concrete plugin: SystemMonitor samples CPU/RAM/GPU/VRAM into ring buffers on a background thread and renders them as _sparkline mini-charts in its popup. GPU comes from _gpu_sample shelling out to nvidia-smi (the same approach as slmn.misc.gpu_free) on non-Mac hosts, or _gpu_sample_darwin reading Apple Silicon’s IOKit registry on macOS.",
+    "crumbs": [
+      "plugins"
+    ]
+  },
+  {
+    "objectID": "docsprocs.html",
+    "href": "docsprocs.html",
+    "title": "docsprocs",
+    "section": "",
+    "text": "Registered via doc_procs in pyproject.toml [tool.nbdev], color_cells runs over every notebook during the docs build (before Quarto renders). It wraps each markdown/raw cell’s source in a Quarto fenced div classed by its boopiter cell type (.boop-note green, .boop-prompt red, .boop-raw orange); styles.css turns those into the colored left bar. Code cells already carry .cell-code, so they’re colored in CSS alone. The page’s H1 title cell is left untouched so Quarto’s title handling isn’t disturbed.\n\n\n\nsource\n\ncolor_cells\ndef color_cells(\n    cell\n):\nnbdev docs processor: wrap a markdown/raw cell’s source in a Quarto fenced div classed by its boopiter cell type, so styles.css can draw boopiter’s colored left bar (green note / red prompt / orange raw). Code cells carry .cell-code and are colored via CSS; the page-title (H1) cell is left alone.\n\n\n\n\nsource\n\nshare_notebook\ndef share_notebook(\n    nb_path, listed:bool=True, images_dir:NoneType=None\n)-&gt;str:\n*Render nb_path into the share site and publish it, returning the public URL. listed puts it on the site’s index; unlisted pages are still rendered and reachable by URL, just not indexed – and re-sharing with the other choice flips that, since the state lives in a file that gets rewritten. Overwrites in place: the directory is named from the notebook’s identity (see share_slug), so a correction updates the page a recipient already has the link to. Renders locally and pushes only the built site to the gh-pages branch, which is why notebook sources never leave this machine. The push is ours rather than quarto publish gh-pages because that command clears the branch before copying its render in, which deletes every page published from a different machine; see _publish_additive. The index is not published from here at all: it is rebuilt by the build-index workflow from every page on the branch, which is the only vantage point that sees shares from every machine – so the site reads the same no matter which machine published last, and publishing only ever adds. Returns as soon as the push lands; GitHub Pages then takes roughly a minute to rebuild.*\n\n\n\n\nsource\n\nshare_name\ndef share_name(\n    path\n)-&gt;str:\n*The published page’s directory name for a notebook: ’_’ (see share_slug).*\n\n\n\n\nsource\n\nshare_slug\ndef share_slug(\n    path\n)-&gt;str:\nSix hex chars identifying a notebook by machine and location: sha256 of hostname + its canonical path. Deterministic, so re-sharing the same file overwrites the same page and a link you’ve already sent stays current – that’s the whole point of not using a random suffix. Keyed on more than the basename because ‘example.ipynb’ in two checkouts, or on two machines, are different documents that would otherwise fight over one URL. realpath (not abspath) so two symlinked routes to one file still collapse to a single page, and a NUL separator so host ‘a’ + path ‘b/c’ can’t collide with host ‘a/b’ + path ‘c’.",
+    "crumbs": [
+      "docsprocs"
+    ]
+  },
+  {
+    "objectID": "notebook.html",
+    "href": "notebook.html",
+    "title": "notebook",
+    "section": "",
+    "text": "# pair_range: a lone cell is its own (i,i) range; a Prompt immediately followed by its Assistant\n# reply is a (prompt_i, assistant_i) pair, addressable from either side; a Prompt with no reply yet\n# (or not immediately followed by one) is just a lone cell.\nnb.reset()\nraw = nb.add('raw', 'r')\np = nb.add('prompt', 'q'); a = nb.add('assistant', 'ans')\nlone_prompt = nb.add('prompt', 'q2')  # no assistant reply -- not a pair\n\nassert nb.pair_range(raw.id) == (nb.index(raw.id), nb.index(raw.id))\nassert nb.pair_range(p.id) == (nb.index(p.id), nb.index(a.id)), \"pair addressed from the prompt side\"\nassert nb.pair_range(a.id) == (nb.index(p.id), nb.index(a.id)), \"pair addressed from the assistant side\"\ni = nb.index(lone_prompt.id)\nassert nb.pair_range(lone_prompt.id) == (i, i), \"a prompt with no reply yet is not a pair\"\nassert nb.pair_range(99999) is None, \"an id that doesn't exist returns None\"\nnb.reset()\n\n# move: a Prompt+Assistant pair moves as one block; boundary moves (past the start/end) are no-ops.\nnb.reset()\nfirst = nb.add('code', '1')\np = nb.add('prompt', 'q'); a = nb.add('assistant', 'ans')\nlast = nb.add('code', '2')\n\nnb.move(p.id, -1)  # move the pair up, swapping with `first`\nassert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']\nassert nb.cells[0].id == p.id and nb.cells[1].id == a.id, \"the pair moved as one block, in order\"\n\nnb.move(nb.cells[0].id, -1)  # already first -- no-op\nassert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']\n\nnb.move(nb.cells[-1].id, 1)  # already last -- no-op\nassert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']\n\nnb.move(p.id, 1)  # move the pair back down past `first`\nassert [c.ctype for c in nb.cells] == ['code', 'prompt', 'assistant', 'code']\nnb.reset()\nprint('pair_range + move: lone cells, pairs, and boundary no-ops all verified')\n# copy/cut/paste: copy leaves the original untouched; cut removes it; paste creates fresh cells\n# (new ids) rather than reusing the originals, and inserts them after the given anchor (or at the\n# end if no anchor is given).\nnb.reset()\na = nb.add('code', 'a'); b = nb.add('code', 'b'); c = nb.add('code', 'c')\n\nnb.copy_range(b.id)\nassert len(nb.cells) == 3, \"copy must not remove anything\"\nassert nb.clipboard[0]['source'] == 'b'\n\npasted = nb.paste_after(a.id)\nassert [x.source for x in nb.cells] == ['a', 'b', 'b', 'c'], \"pasted copy lands right after the anchor\"\nassert pasted[0].id != b.id, \"a pasted cell is a fresh copy, not the original cell object/id\"\n\nnb.reset()\na = nb.add('code', 'a'); b = nb.add('code', 'b'); c = nb.add('code', 'c')\nnb.cut_range(b.id)\nassert [x.source for x in nb.cells] == ['a', 'c'], \"cut removes the cell\"\nassert nb.clipboard[0]['source'] == 'b', \"...but keeps it on the clipboard\"\nassert nb.selected == nb.cells[min(1, len(nb.cells)-1)].id, \"selection lands on a sensible neighbor after cutting\"\n\npasted = nb.paste_after(None)  # no anchor -- appends at the end\nassert [x.source for x in nb.cells] == ['a', 'c', 'b']\n\n# cut/paste also carries a Prompt+Assistant pair as one unit.\nnb.reset()\nlead = nb.add('code', 'lead')\np = nb.add('prompt', 'q'); asst = nb.add('assistant', 'ans')\nnb.cut_range(p.id)\nassert [x.ctype for x in nb.cells] == ['code'], \"cutting a pair removes both cells\"\nassert len(nb.clipboard) == 2 and nb.clipboard[0]['ctype'] == 'prompt' and nb.clipboard[1]['ctype'] == 'assistant'\nnb.paste_after(lead.id)\nassert [x.ctype for x in nb.cells] == ['code', 'prompt', 'assistant'], \"pasting restores the pair intact, in order\"\nnb.reset()\nprint('copy/cut/paste verified, including Prompt+Assistant pairs moving as one unit')\n# remove() deletes a lone cell, or a whole Prompt+Assistant pair when the id addresses one --\n# same pairing rule as pair_range/move/cut, just without going through the clipboard.\nnb.reset()\na = nb.add('code', 'a'); b = nb.add('code', 'b')\nnb.remove(a.id)\nassert [x.source for x in nb.cells] == ['b']\n\nnb.reset()\nlead = nb.add('code', 'lead')\np = nb.add('prompt', 'q'); asst = nb.add('assistant', 'ans')\ntrail = nb.add('code', 'trail')\nnb.remove(asst.id)  # addressed from the assistant side -- should still take the whole pair\nassert [x.ctype for x in nb.cells] == ['code', 'code'], \"removing via the assistant side removes its paired prompt too\"\n\nnb.reset()\nprint('remove() verified for lone cells and Prompt+Assistant pairs')\n# Cell.source normalizes line endings on assignment, however the text arrives. Browsers\n# CRLF-normalize form-submitted &lt;textarea&gt; values, so without this the server's copy of a cell\n# drifted one character per line break away from the caret offsets the client reports -- and\n# split_cell(), which slices c.source at a client-supplied `pos`, cut in the wrong place.\nnb.reset()\nc = Cell(1, 'note', 'a\\r\\nb\\r\\n\\r\\nc')\nassert c.source == 'a\\nb\\n\\nc', \"CRLF normalized at construction\"\nc.source = 'x\\r\\ny'\nassert c.source == 'x\\ny', \"...and on later assignment\"\nc.source = 'old\\rmac'\nassert c.source == 'old\\nmac', \"...including lone CR\"\nassert '\\r' not in nb.add('note', 'p\\r\\nq').source, \"...and via Notebook.add/insert_at\"\n\n# The payoff: a caret offset measured against the '\\n'-only text the editor shows now slices the\n# stored source at exactly that same point. Pre-fix, `pos` landed 8 characters early here (one per\n# line break above it), orphaning all of 'line 8' into the lower cell.\nnb.reset()\ntext = '\\n'.join(f'line {i}' for i in range(1,13))\nc = nb.add('code', text.replace('\\n','\\r\\n'))  # as a browser form-save would deliver it\npos = text.index('line 9')                     # caret at the start of line 9\nhead, tail = c.source[:pos], c.source[pos:]\nassert head.rstrip('\\n').endswith('line 8'), \"everything above the caret stays above\"\nassert tail.lstrip('\\n').startswith('line 9'), \"and the new cell starts exactly at the caret\"\nnb.reset()\nprint('line-ending normalization verified -- caret offsets and stored source now agree')",
+    "crumbs": [
+      "notebook"
+    ]
+  },
+  {
+    "objectID": "notebook.html#cells",
+    "href": "notebook.html#cells",
+    "title": "notebook",
+    "section": "Cells",
+    "text": "Cells\nCTYPES is the set of cell types you can author (code/note/prompt/raw; assistant cells are generated, not authored). Cell is one cell – its type, source, output, and a few UI/export flags – a plain data-holder with no behavior of its own.",
+    "crumbs": [
+      "notebook"
+    ]
+  },
+  {
+    "objectID": "notebook.html#the-notebook",
+    "href": "notebook.html#the-notebook",
+    "title": "notebook",
+    "section": "The notebook",
+    "text": "The notebook\nNotebook holds the stack of cells plus selection, clipboard, and app-level UI state, along with the operations the editor drives (move, copy/cut/paste, remove – all respecting the Prompt+Assistant pairing rule). nb is the single running instance the rest of the app imports and mutates in place.",
+    "crumbs": [
+      "notebook"
+    ]
+  },
+  {
+    "objectID": "notebook.html#tests",
+    "href": "notebook.html#tests",
+    "title": "notebook",
+    "section": "Tests",
+    "text": "Tests\nAssertion-based checks of the trickier Notebook logic – the pair-range/move/clipboard/remove pairing rules – run by nbdev-test. Not exported.",
+    "crumbs": [
+      "notebook"
+    ]
+  },
+  {
+    "objectID": "llms.html",
+    "href": "llms.html",
+    "title": "llms",
+    "section": "",
+    "text": "get_model_list()\n\n['ollama/qwen2.5-coder:latest',\n 'ollama/gemma3:4b',\n 'ollama/llama3.1:latest',\n 'ollama/qwen2.5:latest']\ns =\"Today is July 18. Who's one famous person with this birthday?\"\nc = prompt_llm(s) \nprint(str(c[0]))\ns = \"\"\"\n    Tell me the previous question I asked you, from the previous prompt. \n    I want to see if you retain state between calls\"\"\"\nc = prompt_llm(s) \nprint(str(c[0]))\n\nOne famous person born on July 18th is Mark Zuckerberg, the co-founder and CEO of Facebook.\nI'm sorry for any confusion, but as an AI language model, I don't have the capability to remember or retain information across separate interactions. Each response is generated independently based on the input provided in each session. If you have a specific question or need assistance with something particular, feel free to ask!\ndef add_numbers(\n    a: int,  # First number to add\n    b: int   # Second number to add  \n) -&gt; int:\n    \"Add two numbers together\"\n    return a + b\nres = prompt_llm(\"What's 47 + 23? Use the tool.\", tools=[add_numbers])\nprint(res[0])\n\nThe sum of 47 and 23 is 70. I have completed my task as requested. If you need further assistance or have additional questions, feel free to ask!\n# Confirms get_tool_list() assembles real, callable tools according to a selection dict.\nfrom boopiter.llms import get_tool_list, DEFAULT_TOOL_SELECTION\nprint(len(get_tool_list()), \"tools with defaults:\", [t.__name__ for t in get_tool_list()])\nprint(len(get_tool_list({'boopiter': True, 'slmn-nbtools': False, 'slmn-misc': False, 'slmn-remote': True})), \"tools with only boopiter+remote\")",
+    "crumbs": [
+      "llms"
+    ]
+  },
+  {
+    "objectID": "llms.html#tool-selection",
+    "href": "llms.html#tool-selection",
+    "title": "llms",
+    "section": "Tool selection",
+    "text": "Tool selection\nWhich tool functions to offer the LLM. _LOCAL_TOOLS / DEFAULT_TOOL_SELECTION define the available sources and the default set; get_tool_list assembles the actual function list from whichever sources are selected.",
+    "crumbs": [
+      "llms"
+    ]
+  },
+  {
+    "objectID": "llms.html#listing-available-models",
+    "href": "llms.html#listing-available-models",
+    "title": "llms",
+    "section": "Listing available models",
+    "text": "Listing available models\nget_ollama_list reads every locally-available Ollama model from /api/tags; get_model_list wraps it (and any other sources) into a uniform list of model-info dicts.",
+    "crumbs": [
+      "llms"
+    ]
+  },
+  {
+    "objectID": "llms.html#forcing-streaming-responses",
+    "href": "llms.html#forcing-streaming-responses",
+    "title": "llms",
+    "section": "Forcing streaming responses",
+    "text": "Forcing streaming responses\nA monkeypatch (_call, over the saved _orig_chat_call) makes the chat client always yield streamed responses, working around a limitation in the underlying library.",
+    "crumbs": [
+      "llms"
+    ]
+  },
+  {
+    "objectID": "llms.html#reply-metadata",
+    "href": "llms.html#reply-metadata",
+    "title": "llms",
+    "section": "Reply metadata",
+    "text": "Reply metadata\n_details_block builds the collapsible &lt;details&gt; panel of call metadata (model, finish reason, token counts, tool calls); _reply_details_html fills it in for a real API response. Rendered with escaped FT components, not raw HTML.",
+    "crumbs": [
+      "llms"
+    ]
+  },
+  {
+    "objectID": "guide.html#what-boopiter-is",
+    "href": "guide.html#what-boopiter-is",
+    "title": "User Guide",
+    "section": "What boopiter is",
+    "text": "What boopiter is\nboopiter is a small notebook app for working with a local LLM, in the style of solveit. You build up a document of cells: run code, write notes, and drop in prompt cells that a local model (via Ollama) answers inline. Everything runs on your own machine.\nIt runs in your browser but is driven by a local server you start from the command line (see the home page for install/launch). Point your browser at the address it prints and you’re in.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#starting-the-server",
+    "href": "guide.html#starting-the-server",
+    "title": "User Guide",
+    "section": "Starting the server",
+    "text": "Starting the server\nLaunch boopiter from the repo root:\nboopiter [notebook.ipynb] [--port PORT]\nnotebook.ipynb and --port (default 8000) are both optional – omit the filename to start with a blank notebook.\nToken authentication is on by default. Every code cell runs with this process’s own OS permissions, so an unauthenticated boopiter reachable on a shared network is equivalent to an open shell – the server refuses that by default. On startup it prints:\nboopiter is token-gated. Open:\n\n    http://localhost:8000/?token=&lt;a long random string&gt;\nOpen that exact URL once; it signs you in and remembers you (a cookie) for future visits, so you don’t need the token again until the cookie expires or you use a different browser. If you land on a sign-in page instead, paste the token there. Restarting the server from within the app (the restart-kernel button) keeps the same token, so an in-app restart never signs you out.\nOnly pass --no_auth on a network you fully trust (e.g. localhost-only, no shared Wi-Fi) – it disables the token check entirely.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#the-screen",
+    "href": "guide.html#the-screen",
+    "title": "User Guide",
+    "section": "The screen",
+    "text": "The screen\nThe window has three parts:\n\nThe top bar (across the top) – the file menu and current filename on the left; model and kernel controls on the right.\nThe notebook (the middle) – your stack of cells.\nThe composer (the bottom) – a text box for typing the next cell.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#the-top-bar",
+    "href": "guide.html#the-top-bar",
+    "title": "User Guide",
+    "section": "The top bar",
+    "text": "The top bar\nLeft side: a menu (☰) with New / Open / Save / Download / Restart Server, the boopiter logo, and the current notebook’s filename. (You can also right-click anywhere on the page to get the same menu.)\nRight side, left to right:\n\nPlugin icons – small live indicators contributed by plugins. The built-in one is a system monitor; hover it for CPU / RAM / GPU sparklines.\nTools (wrench) – choose which Python functions the LLM may call while answering (see Prompt cells).\nModel (brain) – pick the model that answers prompt cells (see Choosing a model).\nHelp (?) – opens the keyboard-shortcut reference.\nInterrupt kernel (⊗) – stop the code or reply that’s currently running.\nRestart kernel (↻) – clear the Python session and start fresh.\nRun all (▶) – run every code cell top to bottom (see Running code).\nTheme (moon/sun) – switch light/dark.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#cells-and-cell-types",
+    "href": "guide.html#cells-and-cell-types",
+    "title": "User Guide",
+    "section": "Cells and cell types",
+    "text": "Cells and cell types\nEvery cell is one of four types you can author, plus one the app generates:\n\nCode – Python, run in a shared kernel; output appears beneath it.\nNote – Markdown prose, rendered when you’re not editing it.\nPrompt – a question for the LLM; running it produces an…\nAssistant – reply (generated for you – you don’t create these directly).\nRaw – text passed through untouched.\n\nSelecting a cell: click its header (the small id/label strip at the top of the cell). The selected cell shows a highlighted left border, and the command-mode shortcuts below act on it.\nChanging a cell’s type: select the cell and press m (note), y (code), or r (raw). For a new cell, choose the type on the composer tabs before you add it (next section).",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#adding-cells-with-the-composer",
+    "href": "guide.html#adding-cells-with-the-composer",
+    "title": "User Guide",
+    "section": "Adding cells with the composer",
+    "text": "Adding cells with the composer\nThe composer at the bottom of the page is the main way to add cells:\n\nPick the type on the tabs – Code / Note / Prompt / Raw.\nType into the box.\nPress Shift-Enter (or click Boop) to append it to the notebook.\n\nTo insert a cell in the middle instead, select a cell and press a (insert above) or b (insert below).",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#editing-cells",
+    "href": "guide.html#editing-cells",
+    "title": "User Guide",
+    "section": "Editing cells",
+    "text": "Editing cells\nClick a cell’s body to edit it. Code cells open a code editor (syntax highlighting; Cmd/Ctrl + / toggles comments on the selected lines); note, prompt, and raw cells get a plain text box.\n\nShift-Enter (or Ctrl/Cmd-Enter) saves the cell – and runs it, if it’s code or a prompt.\nEsc cancels the edit and reverts.\nThere’s also a shortcut to split the current cell at the cursor into two – press ? in the app for the exact keys.\n\nNote: an edit isn’t saved until you Shift-Enter it (or run it), so a half-typed change won’t silently persist.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#running-code",
+    "href": "guide.html#running-code",
+    "title": "User Guide",
+    "section": "Running code",
+    "text": "Running code\nRun a single code cell with its Run (▶) button, or by pressing Shift-Enter while editing it. Output streams in live beneath the cell, and the cell is timestamped when it runs.\nRun all (the ▶ button in the top bar) runs every code cell top to bottom, one at a time, scrolling each into view as it goes, and stops if a cell raises an error.\nThe kernel is shared across cells (like Jupyter), so names defined in one cell are available in later ones. Use Interrupt (⊗) to stop a long-running cell, or Restart kernel (↻) to wipe the session and start over.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#prompt-cells-and-the-llm",
+    "href": "guide.html#prompt-cells-and-the-llm",
+    "title": "User Guide",
+    "section": "Prompt cells and the LLM",
+    "text": "Prompt cells and the LLM\nA prompt cell is a question for the local model. Run it (Run ▶ or Shift-Enter) and the reply streams into an assistant cell just below it.\nChoosing a model – the brain icon in the top bar opens the model picker:\n\nStandard model – answers ordinary prompts.\nReasoning model – a “thinking”-capable model (only models Ollama reports as such are listed), with an L / M / H effort control beside it.\nClick the brain icon itself to toggle which of the two answers your prompts; it turns cyan while the reasoning model is active.\n\nTools – the wrench menu lets the model call selected Python functions while it answers (they run in your kernel). Pick which tool sources are offered there.\nboopiter detects whatever models ollama list knows about when it starts; if qwen2.5-coder is installed, it’s the default.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#organizing-the-notebook",
+    "href": "guide.html#organizing-the-notebook",
+    "title": "User Guide",
+    "section": "Organizing the notebook",
+    "text": "Organizing the notebook\nWith a cell selected (not being edited), single keys act on it:\n\na / b – insert a cell above / below\nj / k (or ↓ / ↑) – move the selection\nthe arrow-up / arrow-down icons on a cell – move the cell itself\nc / x / v – copy / cut / paste\ndd (press d twice) – delete the selected cell\nthe eye icon – show / hide a cell’s content\nw – pull the code blocks out of an assistant reply into their own code cells",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#saving-and-loading",
+    "href": "guide.html#saving-and-loading",
+    "title": "User Guide",
+    "section": "Saving and loading",
+    "text": "Saving and loading\n\nSave – press s, or use the file menu (☰) / right-click menu; a toast confirms.\nOpen / New / Download – from the file menu or right-click.\nYou can also launch boopiter with a notebook already loaded:\nboopiter nbs/example.ipynb\n\nNotebooks are ordinary .ipynb files – they open in Jupyter too.",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "guide.html#keyboard-shortcuts",
+    "href": "guide.html#keyboard-shortcuts",
+    "title": "User Guide",
+    "section": "Keyboard shortcuts",
+    "text": "Keyboard shortcuts\nPress ? (or the help icon) any time for this list in the app. Command-mode shortcuts work when you are not editing a cell.\n\n\n\nKey\nAction\nWhen\n\n\n\n\na / b\nInsert cell above / below\ncommand\n\n\nj / k, ↑ / ↓\nMove selection\ncommand\n\n\nm / y / r\nSet type: note / code / raw\ncommand\n\n\nc / x / v\nCopy / cut / paste\ncommand\n\n\ndd\nDelete selected cell\ncommand\n\n\ns\nSave notebook\ncommand\n\n\nw\nPull code blocks from a reply\ncommand\n\n\nShift-Enter\nSave, and run code/prompt cells\nediting\n\n\nEsc\nCancel edit\nediting\n\n\nCmd/Ctrl + /\nToggle comment\nediting (code)",
+    "crumbs": [
+      "User Guide"
+    ]
+  },
+  {
+    "objectID": "serialize.html",
+    "href": "serialize.html",
+    "title": "serialize",
+    "section": "",
+    "text": "# Round-trip test: the prompt/reply structure (and code/note/raw, export, details) must survive\n# nbdev-clean, which strips cell metadata. We prove it by saving, deleting ALL metadata (exactly\n# what nbdev-clean does to the parts we no longer rely on), then reloading and checking.\nimport tempfile as _tf, json as _json, os as _os\nnb.cells.clear(); nb._nid = 0; nb.selected = None\nnb.add('note', '# hi there')\nnb.add('prompt', 'What is 2+2?')\nnb.add('assistant', 'It is 4.', details='&lt;details&gt;&lt;summary&gt;Reply details&lt;/summary&gt;&lt;ul&gt;&lt;li&gt;Model: test&lt;/li&gt;&lt;/ul&gt;&lt;/details&gt;')\nnb.add('code', 'x = 4', export=True)\nnb.add('raw', 'literal text')\n_p = _tf.mktemp(suffix='.ipynb')\nsave_notebook(_p)\n_doc = _json.load(open(_p))                       # simulate nbdev-clean: wipe all metadata\n_doc['metadata'] = {}\nfor _c in _doc['cells']: _c['metadata'] = {}\n_json.dump(_doc, open(_p, 'w'))\nload_notebook(_p)\nassert [c.ctype for c in nb.cells] == ['note','prompt','assistant','code','raw'], [c.ctype for c in nb.cells]\n_a = nb.cells[2]\nassert _a.ctype == 'assistant' and _a.details and 'Model: test' in _a.details\nassert nb.cells[3].export and nb.cells[3].source == 'x = 4'\nassert nb.cells[1].source == 'What is 2+2?' and nb.cells[1].ctype == 'prompt'\n_os.remove(_p)\nprint('round-trip survived a full metadata strip:', [c.ctype for c in nb.cells])\n\nround-trip survived a full metadata strip: ['note', 'prompt', 'assistant', 'code', 'raw']",
+    "crumbs": [
+      "serialize"
+    ]
+  },
+  {
+    "objectID": "serialize.html#the-export-pragma",
+    "href": "serialize.html#the-export-pragma",
+    "title": "serialize",
+    "section": "The #| export pragma",
+    "text": "The #| export pragma\nboopiter keeps nbdev’s #| export pragma out of a cell’s editable source entirely, tracking it as a flag instead. _has_export/_strip_export detect and remove that leading line when reading a cell from disk.",
+    "crumbs": [
+      "serialize"
+    ]
+  },
+  {
+    "objectID": "serialize.html#saving",
+    "href": "serialize.html#saving",
+    "title": "serialize",
+    "section": "Saving",
+    "text": "Saving\nsave_notebook writes nb out as a real Jupyter .ipynb, merging each Prompt + following Assistant into one markdown cell (solveit separator + the assistant’s &lt;details&gt; block + the reply). _blocks_to_nb_outputs converts boopiter’s output blocks into valid nbformat outputs so saved files still render in Jupyter. Cell ids and the separator’s reply-id are reused across saves to keep git diffs clean.",
+    "crumbs": [
+      "serialize"
+    ]
+  },
+  {
+    "objectID": "serialize.html#loading",
+    "href": "serialize.html#loading",
+    "title": "serialize",
+    "section": "Loading",
+    "text": "Loading\nload_notebook is the inverse: a markdown cell carrying the SOLVEIT_SEPARATOR splits back into a Prompt + Assistant pair (re-extracting the &lt;details&gt; block); plain markdown is a note; code cells get their #| export flag detected. It falls back to legacy metadata.boopiter for notebooks saved by older boopiter, and to nbformat cell types for non-boopiter notebooks.",
+    "crumbs": [
+      "serialize"
+    ]
+  },
+  {
+    "objectID": "serialize.html#round-trip-test",
+    "href": "serialize.html#round-trip-test",
+    "title": "serialize",
+    "section": "Round-trip test",
+    "text": "Round-trip test\nProves the point of this whole scheme: save a notebook, wipe every cell’s metadata (what nbdev-clean does), reload, and confirm the prompt/reply structure – plus code/note/raw, #| export, and the assistant details – all survive because they live in the cell source, not metadata. Runs under nbdev-test.",
+    "crumbs": [
+      "serialize"
+    ]
+  },
+  {
+    "objectID": "index.html#whats-inside",
+    "href": "index.html#whats-inside",
+    "title": "boopiter",
+    "section": "What’s inside",
+    "text": "What’s inside",
+    "crumbs": [
+      "boopiter"
+    ]
+  },
+  {
+    "objectID": "index.html#installation",
+    "href": "index.html#installation",
+    "title": "boopiter",
+    "section": "Installation",
+    "text": "Installation",
+    "crumbs": [
+      "boopiter"
+    ]
+  },
+  {
+    "objectID": "index.html#how-to-use",
+    "href": "index.html#how-to-use",
+    "title": "boopiter",
+    "section": "How to use",
+    "text": "How to use\n\nLocal LLM (Ollama)\nPrompt cells are answered by a local model via Ollama.\n\nInstall Ollama: https://ollama.com/download (it installs and runs as a background service).\nPull a model – qwen2.5-coder is recommended and, if present, is boopiter’s default:\nollama pull qwen2.5-coder\nThat’s it – when boopiter starts it detects every model ollama list knows about and populates the model dropdown in the top bar, preferring qwen2.5-coder if it’s installed.\n\n\n\nLaunching boopiter\nLaunch the server:\nboopiter [--port 8000]\nIf any other boopiter server is running, it will be killed in favor of the new one.\nPoint your browser at that URL.\nYou can also aunch and pre-load a notebook:\nboopiter nbs/00_core.ipynb",
+    "crumbs": [
+      "boopiter"
+    ]
+  },
+  {
+    "objectID": "index.html#screenshot",
+    "href": "index.html#screenshot",
+    "title": "boopiter",
+    "section": "Screenshot",
+    "text": "Screenshot\n\n\n\nscreenshot",
+    "crumbs": [
+      "boopiter"
+    ]
+  },
+  {
+    "objectID": "index.html#known-issues-roadmap",
+    "href": "index.html#known-issues-roadmap",
+    "title": "boopiter",
+    "section": "Known Issues / Roadmap",
+    "text": "Known Issues / Roadmap\nRough priority order, top = most impactful.\n\nPrompt cells are slow and lose focus. Editing/inserting a prompt cell and running it doesn’t scroll it into view – you have to hunt for it on screen. This makes prompt cells unpleasant to use in practice. Likely fix: whenever a cell’s content changes (esp. after a run), scroll the viewport so that cell is visible.\nGeneral focus/scroll behavior is unreliable across the notebook, not just for prompt cells – worth a broader pass once the prompt-cell case is fixed.\nCode cell outputs are text-only (with some color support). A real Jupyter notebook can render matplotlib figures, IPython HTML output, and interactive widgets like tqdm progress bars. Would need a proper output-type dispatch (image/html/etc.) instead of assuming text.",
+    "crumbs": [
+      "boopiter"
+    ]
+  },
+  {
+    "objectID": "cells.html#daisyui-app-setup",
+    "href": "cells.html#daisyui-app-setup",
+    "title": "cells",
+    "section": "DaisyUI + app setup",
+    "text": "DaisyUI + app setup\nCDN headers for DaisyUI + Tailwind, plus KatexMarkdownJS() (renders .marked elements as markdown + KaTeX) and the command-mode hotkey listener.",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#authentication",
+    "href": "cells.html#authentication",
+    "title": "cells",
+    "section": "Authentication",
+    "text": "Authentication\nA ?token= query param (printed at startup) or the /login form gates every route except health-check/login itself – see _check_auth, the Beforeware wired into app below. Every code cell already runs with this process’s own OS permissions, so an unauthenticated boopiter listening on a shared network is equivalent to an open shell; boopiter launch --no_auth opts out explicitly for a fully trusted network.",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#code-execution",
+    "href": "cells.html#code-execution",
+    "title": "cells",
+    "section": "Code execution",
+    "text": "Code execution\nA single IPython shell backs every code cell (like the lesson’s ex), with errors returned as text instead of raised.",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#cell-notebook-model",
+    "href": "cells.html#cell-notebook-model",
+    "title": "cells",
+    "section": "Cell + Notebook model",
+    "text": "Cell + Notebook model\nA Cell carries its type, source, optional output, and a visible flag (the eye toggle — whether the LLM sees it). Notebook is the in-memory store of cells, the composer’s selected type, and the currently selected cell (for hotkeys).",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#llm-interaction",
+    "href": "cells.html#llm-interaction",
+    "title": "cells",
+    "section": "LLM Interaction",
+    "text": "LLM Interaction\nThe whole point of the visibility toggle: context is only the visible cells. The stub proves the plumbing by reporting what it can see; swap stub_reply for a real model call later.",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#rendering",
+    "href": "cells.html#rendering",
+    "title": "cells",
+    "section": "Rendering",
+    "text": "Rendering\nEach type gets a colored left border (matching the SolveIt screenshot: raw=yellow, code=blue, note=green, prompt/assistant=red). The selected cell gets a ring; hidden-from-LLM cells are dimmed. Note cells render as markdown via the .marked class (KaTeX, images, HTML).",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#composer",
+    "href": "cells.html#composer",
+    "title": "cells",
+    "section": "Composer",
+    "text": "Composer\nThe bottom bar: type tabs, a textarea, Submit. Picking a tab sets the type server-side; Submit creates the cell (running it, if code; spawning an Assistant reply, if prompt).",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "cells.html#routes",
+    "href": "cells.html#routes",
+    "title": "cells",
+    "section": "Routes",
+    "text": "Routes\nComposer/toolbar routes plus the command-mode routes driven by hotkeys (select, select_delta, insert, del_selected, settype_selected).",
+    "crumbs": [
+      "cells"
+    ]
+  },
+  {
+    "objectID": "kernel.html#thread-safe-stdout-routing",
+    "href": "kernel.html#thread-safe-stdout-routing",
+    "title": "kernel",
+    "section": "Thread-safe stdout routing",
+    "text": "Thread-safe stdout routing\n_StdoutRouter is installed once as the process’s real sys.stdout/sys.stderr and dispatches each write to a per-thread target – so cells running on different threads never cross-contaminate each other’s output, and ordinary prints still reach the console.",
+    "crumbs": [
+      "kernel"
+    ]
+  },
+  {
+    "objectID": "kernel.html#building-output-blocks",
+    "href": "kernel.html#building-output-blocks",
+    "title": "kernel",
+    "section": "Building output blocks",
+    "text": "Building output blocks\nHelpers that turn raw execution output into the ordered list of display blocks a cell stores: _collapse_cr flattens \\r-overwritten progress bars, _best_block picks the richest MIME rendering of a result, and _flush_figures captures any still-open matplotlib figures as PNGs.",
+    "crumbs": [
+      "kernel"
+    ]
+  },
+  {
+    "objectID": "kernel.html#running-code-synchronously",
+    "href": "kernel.html#running-code-synchronously",
+    "title": "kernel",
+    "section": "Running code synchronously",
+    "text": "Running code synchronously\nrun_code executes a cell’s source in the shared IPython shell and returns its output blocks – the simple, blocking path.",
+    "crumbs": [
+      "kernel"
+    ]
+  },
+  {
+    "objectID": "kernel.html#streaming-from-a-background-thread",
+    "href": "kernel.html#streaming-from-a-background-thread",
+    "title": "kernel",
+    "section": "Streaming from a background thread",
+    "text": "Streaming from a background thread\nFor live output, _run_code_bg runs the same execution on a background thread with stdout/stderr tee’d (_TeeStream) into a shared buffer, while _RunState tracks the single in-flight run (only one cell executes at a time, like a real kernel). cells.py polls this state to stream output to the browser.",
+    "crumbs": [
+      "kernel"
+    ]
+  },
+  {
+    "objectID": "example.html",
+    "href": "example.html",
+    "title": "Example",
+    "section": "",
+    "text": "import matplotlib.pyplot as plt\nimport tqdm.auto as tqdm\nimport numpy as np\nimport matplotlib.pyplot as plt\n\n# Define the function to plot\ndef f(x, y):\n    return np.sin(np.sqrt(x**2 + y**2))\n\n# Generate data\nx = np.linspace(-5, 5, 100)\ny = np.linspace(-5, 5, 100)\nX, Y = np.meshgrid(x, y)\nZ = f(X, Y)\n\n# Create the plot\nplt.figure(figsize=(8, 6))\nplt.contourf(X, Y, Z, levels=20, cmap='viridis')\nplt.colorbar(label='f(x, y)')\nplt.contour(X, Y, Z, colors='black', levels=10)\nplt.xlabel('x')\nplt.ylabel('y')\nplt.title('2D Heat Map with Contour Lines')\nplt.show()\n\n&lt;ipython-input-1-6356375be1f3&gt;:22: UserWarning: FigureCanvasAgg is non-interactive, and thus cannot be shown\n  plt.show()\nfrom tqdm import tqdm\nimport time\n\nfor i in tqdm(range(1000)):\n    time.sleep(0.01)  # Simulate some work being done\n\n100%|##########| 1000/1000 [00:13&lt;00:00, 72.47it/s]\nfrom tqdm.notebook import tqdm\nimport time\n\nfor i in tqdm(range(1000)):\n    time.sleep(0.01)  # Simulate some work being done\n\n  0%|          | 0/1000 [00:00&lt;?, ?it/s]\nfrom tqdm.auto import tqdm\nimport time\n\nfor i in tqdm(range(1000)):\n    time.sleep(0.01)  # Simulate some work being done\n\n100%|##########| 1000/1000 [00:12&lt;00:00, 82.16it/s]\nimport numpy as np, plotly.graph_objs as go\nfrom IPython.display import display\nnp.random.seed(42); n = 100\nx, y = np.random.rand(2, n)*2 - 1; z = np.hypot(x, y)\nfig = go.Figure(go.Scatter3d(x=x, y=y, z=z, mode='markers',\n    marker=dict(size=5, color=z, colorscale='Viridis', opacity=.8)))\nfig.update_layout(title='3D Scatter', margin=dict(l=0, r=0, b=0, t=30),\n    scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'))\nh = fig.to_html(include_plotlyjs='cdn', full_html=True).replace('&','&amp;').replace('\"','&quot;')\ndisplay({'text/html': f'&lt;iframe srcdoc=\"{h}\" width=\"100%\" height=\"500\" style=\"border:none\"&gt;&lt;/iframe&gt;'}, raw=True)",
+    "crumbs": [
+      "Example"
+    ]
+  },
+  {
+    "objectID": "example.html#plots",
+    "href": "example.html#plots",
+    "title": "Example",
+    "section": "Plots",
+    "text": "Plots",
+    "crumbs": [
+      "Example"
+    ]
+  },
+  {
+    "objectID": "example.html#progress-bars",
+    "href": "example.html#progress-bars",
+    "title": "Example",
+    "section": "Progress Bars",
+    "text": "Progress Bars\nWe can only use the regular TQDM as if we were in a terminal because the notebook version requires IPy widgets that I’m not going to implement",
+    "crumbs": [
+      "Example"
+    ]
+  },
+  {
+    "objectID": "core.html#port-management",
+    "href": "core.html#port-management",
+    "title": "core",
+    "section": "Port management",
+    "text": "Port management\nBefore starting, boopiter checks who owns the target port: _port_owner pings it to tell a running boopiter from someone else from nobody, and _kill_port frees a port held by a previous boopiter run – so relaunching is safe but an unrelated service is never killed.",
+    "crumbs": [
+      "core"
+    ]
+  },
+  {
+    "objectID": "core.html#tailwind-precompile",
+    "href": "core.html#tailwind-precompile",
+    "title": "core",
+    "section": "Tailwind precompile",
+    "text": "Tailwind precompile\n_build_tailwind compiles a static Tailwind CSS file once at launch, replacing the CDN’s in-browser JIT compiler – faster page loads and no runtime CDN dependency.",
+    "crumbs": [
+      "core"
+    ]
+  },
+  {
+    "objectID": "core.html#launching",
+    "href": "core.html#launching",
+    "title": "core",
+    "section": "Launching",
+    "text": "Launching\nlaunch ties it together – free the port if it’s ours, build the CSS, start the server. It’s the @call_parse entry point exposed on the command line.",
+    "crumbs": [
+      "core"
+    ]
+  }
+]

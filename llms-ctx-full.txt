@@ -1,0 +1,3738 @@
+<project title="boopiter" summary='boop-iter notebook LLM workflow -- cells are "boops," iteratively keeping the human in the loop. A vibe-coded, education-focused clone of and homage to the solveit GUI: a local-execution notebook where prompt cells are answered by a local LLM (via Ollama), built with FastHTML and nbdev.'>boopiter is organized as a handful of small nbdev modules: a pure in-memory notebook data
+model, a code-execution kernel, an `.ipynb` file boundary, a local-LLM interface, a FastHTML
+UI that ties them together, and a small top-bar plugin system.<docs><doc title="core" desc="server startup -- launch/relaunch the app on a port, precompile Tailwind"># core
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Port management
+
+Before starting, boopiter checks who owns the target port:
+[`_port_owner`](https://drscotthawley.github.io/boopiter/core.html#_port_owner)
+pings it to tell a running boopiter from someone else from nobody, and
+[`_kill_port`](https://drscotthawley.github.io/boopiter/core.html#_kill_port)
+frees a port held by a *previous boopiter* run – so relaunching is safe
+but an unrelated service is never killed.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Tailwind precompile
+
+[`_build_tailwind`](https://drscotthawley.github.io/boopiter/core.html#_build_tailwind)
+compiles a static Tailwind CSS file once at launch, replacing the CDN’s
+in-browser JIT compiler – faster page loads and no runtime CDN
+dependency.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Launching
+
+[`launch`](https://drscotthawley.github.io/boopiter/core.html#launch)
+ties it together – free the port if it’s ours, build the CSS, start the
+server. It’s the `@call_parse` entry point exposed on the command line.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/core.py#L54"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### launch
+
+``` python
+def launch(
+    nbfile:Annotated=None, # .ipynb file to load on startup
+    port:int=8000, # the port to serve boopiter on
+    no_auth:bool=False, # skip token-gating the server -- ONLY on a network you fully trust; every code cell already runs with this process's own permissions, so an unauthed boopiter is equivalent to handing out a shell
+):
+```
+
+*Launch (or relaunch) the boopiter server; refuses to touch a port held
+by something that isn’t boopiter*
+
+</div></doc><doc title="notebook" desc="the in-memory notebook data model -- a typed `Cell`, the `Notebook`, and the running `nb`"># notebook
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Cells
+
+`CTYPES` is the set of cell types you can author
+(`code`/`note`/`prompt`/`raw`; `assistant` cells are generated, not
+authored).
+[`Cell`](https://drscotthawley.github.io/boopiter/notebook.html#cell) is
+one cell – its type, source, output, and a few UI/export flags – a plain
+data-holder with no behavior of its own.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/notebook.py#L19"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### Cell
+
+``` python
+def Cell(
+    id:int, ctype:str, source:str, output:Any=None, visible:bool=True, model:str | None=None, nb_id:str | None=None,
+    export:bool=False, details:str | None=None
+):
+```
+
+*One notebook cell: its type, source text, any output, and a few
+UI/export-related flags.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## The notebook
+
+[`Notebook`](https://drscotthawley.github.io/boopiter/notebook.html#notebook)
+holds the stack of cells plus selection, clipboard, and app-level UI
+state, along with the operations the editor drives (move,
+copy/cut/paste, remove – all respecting the Prompt+Assistant pairing
+rule). `nb` is the single running instance the rest of the app imports
+and mutates in place.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/notebook.py#L44"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### Notebook
+
+``` python
+def Notebook():
+```
+
+*The whole in-memory notebook: its cells, selection, clipboard, and
+app-level UI state.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Tests
+
+Assertion-based checks of the trickier
+[`Notebook`](https://drscotthawley.github.io/boopiter/notebook.html#notebook)
+logic – the pair-range/move/clipboard/remove pairing rules – run by
+`nbdev-test`. Not exported.
+
+</div>
+
+``` python
+# pair_range: a lone cell is its own (i,i) range; a Prompt immediately followed by its Assistant
+# reply is a (prompt_i, assistant_i) pair, addressable from either side; a Prompt with no reply yet
+# (or not immediately followed by one) is just a lone cell.
+nb.reset()
+raw = nb.add('raw', 'r')
+p = nb.add('prompt', 'q'); a = nb.add('assistant', 'ans')
+lone_prompt = nb.add('prompt', 'q2')  # no assistant reply -- not a pair
+
+assert nb.pair_range(raw.id) == (nb.index(raw.id), nb.index(raw.id))
+assert nb.pair_range(p.id) == (nb.index(p.id), nb.index(a.id)), "pair addressed from the prompt side"
+assert nb.pair_range(a.id) == (nb.index(p.id), nb.index(a.id)), "pair addressed from the assistant side"
+i = nb.index(lone_prompt.id)
+assert nb.pair_range(lone_prompt.id) == (i, i), "a prompt with no reply yet is not a pair"
+assert nb.pair_range(99999) is None, "an id that doesn't exist returns None"
+nb.reset()
+
+# move: a Prompt+Assistant pair moves as one block; boundary moves (past the start/end) are no-ops.
+nb.reset()
+first = nb.add('code', '1')
+p = nb.add('prompt', 'q'); a = nb.add('assistant', 'ans')
+last = nb.add('code', '2')
+
+nb.move(p.id, -1)  # move the pair up, swapping with `first`
+assert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']
+assert nb.cells[0].id == p.id and nb.cells[1].id == a.id, "the pair moved as one block, in order"
+
+nb.move(nb.cells[0].id, -1)  # already first -- no-op
+assert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']
+
+nb.move(nb.cells[-1].id, 1)  # already last -- no-op
+assert [c.ctype for c in nb.cells] == ['prompt', 'assistant', 'code', 'code']
+
+nb.move(p.id, 1)  # move the pair back down past `first`
+assert [c.ctype for c in nb.cells] == ['code', 'prompt', 'assistant', 'code']
+nb.reset()
+print('pair_range + move: lone cells, pairs, and boundary no-ops all verified')
+```
+
+``` python
+# copy/cut/paste: copy leaves the original untouched; cut removes it; paste creates fresh cells
+# (new ids) rather than reusing the originals, and inserts them after the given anchor (or at the
+# end if no anchor is given).
+nb.reset()
+a = nb.add('code', 'a'); b = nb.add('code', 'b'); c = nb.add('code', 'c')
+
+nb.copy_range(b.id)
+assert len(nb.cells) == 3, "copy must not remove anything"
+assert nb.clipboard[0]['source'] == 'b'
+
+pasted = nb.paste_after(a.id)
+assert [x.source for x in nb.cells] == ['a', 'b', 'b', 'c'], "pasted copy lands right after the anchor"
+assert pasted[0].id != b.id, "a pasted cell is a fresh copy, not the original cell object/id"
+
+nb.reset()
+a = nb.add('code', 'a'); b = nb.add('code', 'b'); c = nb.add('code', 'c')
+nb.cut_range(b.id)
+assert [x.source for x in nb.cells] == ['a', 'c'], "cut removes the cell"
+assert nb.clipboard[0]['source'] == 'b', "...but keeps it on the clipboard"
+assert nb.selected == nb.cells[min(1, len(nb.cells)-1)].id, "selection lands on a sensible neighbor after cutting"
+
+pasted = nb.paste_after(None)  # no anchor -- appends at the end
+assert [x.source for x in nb.cells] == ['a', 'c', 'b']
+
+# cut/paste also carries a Prompt+Assistant pair as one unit.
+nb.reset()
+lead = nb.add('code', 'lead')
+p = nb.add('prompt', 'q'); asst = nb.add('assistant', 'ans')
+nb.cut_range(p.id)
+assert [x.ctype for x in nb.cells] == ['code'], "cutting a pair removes both cells"
+assert len(nb.clipboard) == 2 and nb.clipboard[0]['ctype'] == 'prompt' and nb.clipboard[1]['ctype'] == 'assistant'
+nb.paste_after(lead.id)
+assert [x.ctype for x in nb.cells] == ['code', 'prompt', 'assistant'], "pasting restores the pair intact, in order"
+nb.reset()
+print('copy/cut/paste verified, including Prompt+Assistant pairs moving as one unit')
+```
+
+``` python
+# remove() deletes a lone cell, or a whole Prompt+Assistant pair when the id addresses one --
+# same pairing rule as pair_range/move/cut, just without going through the clipboard.
+nb.reset()
+a = nb.add('code', 'a'); b = nb.add('code', 'b')
+nb.remove(a.id)
+assert [x.source for x in nb.cells] == ['b']
+
+nb.reset()
+lead = nb.add('code', 'lead')
+p = nb.add('prompt', 'q'); asst = nb.add('assistant', 'ans')
+trail = nb.add('code', 'trail')
+nb.remove(asst.id)  # addressed from the assistant side -- should still take the whole pair
+assert [x.ctype for x in nb.cells] == ['code', 'code'], "removing via the assistant side removes its paired prompt too"
+
+nb.reset()
+print('remove() verified for lone cells and Prompt+Assistant pairs')
+```
+
+``` python
+# Cell.source normalizes line endings on assignment, however the text arrives. Browsers
+# CRLF-normalize form-submitted <textarea> values, so without this the server's copy of a cell
+# drifted one character per line break away from the caret offsets the client reports -- and
+# split_cell(), which slices c.source at a client-supplied `pos`, cut in the wrong place.
+nb.reset()
+c = Cell(1, 'note', 'a\r\nb\r\n\r\nc')
+assert c.source == 'a\nb\n\nc', "CRLF normalized at construction"
+c.source = 'x\r\ny'
+assert c.source == 'x\ny', "...and on later assignment"
+c.source = 'old\rmac'
+assert c.source == 'old\nmac', "...including lone CR"
+assert '\r' not in nb.add('note', 'p\r\nq').source, "...and via Notebook.add/insert_at"
+
+# The payoff: a caret offset measured against the '\n'-only text the editor shows now slices the
+# stored source at exactly that same point. Pre-fix, `pos` landed 8 characters early here (one per
+# line break above it), orphaning all of 'line 8' into the lower cell.
+nb.reset()
+text = '\n'.join(f'line {i}' for i in range(1,13))
+c = nb.add('code', text.replace('\n','\r\n'))  # as a browser form-save would deliver it
+pos = text.index('line 9')                     # caret at the start of line 9
+head, tail = c.source[:pos], c.source[pos:]
+assert head.rstrip('\n').endswith('line 8'), "everything above the caret stays above"
+assert tail.lstrip('\n').startswith('line 9'), "and the new cell starts exactly at the caret"
+nb.reset()
+print('line-ending normalization verified -- caret offsets and stored source now agree')
+```</doc><doc title="kernel" desc="the code-execution engine -- run a cell's source and stream its output"># kernel
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Thread-safe stdout routing
+
+[`_StdoutRouter`](https://drscotthawley.github.io/boopiter/kernel.html#_stdoutrouter)
+is installed once as the process’s real `sys.stdout`/`sys.stderr` and
+dispatches each write to a *per-thread* target – so cells running on
+different threads never cross-contaminate each other’s output, and
+ordinary prints still reach the console.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Building output blocks
+
+Helpers that turn raw execution output into the ordered list of display
+blocks a cell stores:
+[`_collapse_cr`](https://drscotthawley.github.io/boopiter/kernel.html#_collapse_cr)
+flattens `\r`-overwritten progress bars,
+[`_best_block`](https://drscotthawley.github.io/boopiter/kernel.html#_best_block)
+picks the richest MIME rendering of a result, and
+[`_flush_figures`](https://drscotthawley.github.io/boopiter/kernel.html#_flush_figures)
+captures any still-open matplotlib figures as PNGs.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Running code synchronously
+
+[`run_code`](https://drscotthawley.github.io/boopiter/kernel.html#run_code)
+executes a cell’s source in the shared IPython shell and returns its
+output blocks – the simple, blocking path.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/kernel.py#L104"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_code
+
+``` python
+def run_code(
+    src:str
+)->list:
+```
+
+\*Execute `src` in the shared shell; return an ordered list of output
+blocks (each a dict with ‘type’ – stream/error/display – and, for
+display blocks, a ‘mime’ type). See Cell.output. Routes stdout/stderr
+through \_StdoutRouter (same pattern as \_run_code_bg) rather than
+IPython’s own capture_output(stdout=True), whose internal swap is a raw
+global reassignment – letting this call and a concurrent \_run_code_bg
+(different threads) safely capture their own output at the same time
+instead of one clobbering the other’s capture window.\*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Streaming from a background thread
+
+For live output,
+[`_run_code_bg`](https://drscotthawley.github.io/boopiter/kernel.html#_run_code_bg)
+runs the same execution on a background thread with stdout/stderr tee’d
+([`_TeeStream`](https://drscotthawley.github.io/boopiter/kernel.html#_teestream))
+into a shared buffer, while
+[`_RunState`](https://drscotthawley.github.io/boopiter/kernel.html#_runstate)
+tracks the single in-flight run (only one cell executes at a time, like
+a real kernel). `cells.py` polls this state to stream output to the
+browser.
+
+</div></doc><doc title="serialize" desc="the `.ipynb` file boundary -- save the live notebook and load one back"># serialize
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## The `#| export` pragma
+
+boopiter keeps nbdev’s `#| export` pragma out of a cell’s editable
+source entirely, tracking it as a flag instead.
+[`_has_export`](https://drscotthawley.github.io/boopiter/serialize.html#_has_export)/[`_strip_export`](https://drscotthawley.github.io/boopiter/serialize.html#_strip_export)
+detect and remove that leading line when reading a cell from disk.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Saving
+
+[`save_notebook`](https://drscotthawley.github.io/boopiter/serialize.html#save_notebook)
+writes `nb` out as a real Jupyter `.ipynb`, merging each Prompt +
+following Assistant into one markdown cell (solveit separator + the
+assistant’s `<details>` block + the reply).
+[`_blocks_to_nb_outputs`](https://drscotthawley.github.io/boopiter/serialize.html#_blocks_to_nb_outputs)
+converts boopiter’s output blocks into valid nbformat outputs so saved
+files still render in Jupyter. Cell ids and the separator’s reply-id are
+reused across saves to keep git diffs clean.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/serialize.py#L92"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### save_notebook
+
+``` python
+def save_notebook(
+    path:str | pathlib.Path | None=None
+)->Path:
+```
+
+*Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb`
+in the cwd by default). A Prompt cell and the Assistant reply that
+follows it are stored solveit-style as a SINGLE markdown cell – prompt,
+a `##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_... -->` line, the assistant’s
+`<details>` block, then the reply – so the prompt/reply structure lives
+in the cell source (which nbdev-clean leaves alone) rather than in
+strippable metadata. note/code/raw stay plain native cells; code cells
+keep their `#| export` pragma and outputs. Cell ids (and the separator’s
+reply-id hex) are preserved across saves so unchanged cells don’t churn
+git diffs. A `solveit_ai:true` flag is also stamped on prompt/reply
+cells for solveit’s benefit – boopiter itself relies only on the
+separator.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Loading
+
+[`load_notebook`](https://drscotthawley.github.io/boopiter/serialize.html#load_notebook)
+is the inverse: a markdown cell carrying the `SOLVEIT_SEPARATOR` splits
+back into a Prompt + Assistant pair (re-extracting the `<details>`
+block); plain markdown is a note; code cells get their `#| export` flag
+detected. It falls back to legacy `metadata.boopiter` for notebooks
+saved by older boopiter, and to nbformat cell types for non-boopiter
+notebooks.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/serialize.py#L131"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### load_notebook
+
+``` python
+def load_notebook(
+    path:str | pathlib.Path
+)->Notebook:
+```
+
+*Load a Jupyter notebook file into `nb`, replacing its current contents
+– the inverse of save_notebook(). A markdown cell containing the
+`SOLVEIT_SEPARATOR` splits back into a Prompt cell plus its Assistant
+reply (with the `<details>` block re-extracted into `details`); other
+markdown is a note; code cells get their leading `#| export` detected
+and stripped. For notebooks saved by older boopiter it falls back to
+reading legacy `metadata.boopiter` (ctype/visible/details); for plain
+non-boopiter notebooks it falls back to nbformat cell types.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Round-trip test
+
+Proves the point of this whole scheme: save a notebook, wipe every
+cell’s metadata (what `nbdev-clean` does), reload, and confirm the
+prompt/reply structure – plus code/note/raw, `#| export`, and the
+assistant `details` – all survive because they live in the cell source,
+not metadata. Runs under `nbdev-test`.
+
+</div>
+
+``` python
+# Round-trip test: the prompt/reply structure (and code/note/raw, export, details) must survive
+# nbdev-clean, which strips cell metadata. We prove it by saving, deleting ALL metadata (exactly
+# what nbdev-clean does to the parts we no longer rely on), then reloading and checking.
+import tempfile as _tf, json as _json, os as _os
+nb.cells.clear(); nb._nid = 0; nb.selected = None
+nb.add('note', '# hi there')
+nb.add('prompt', 'What is 2+2?')
+nb.add('assistant', 'It is 4.', details='<details><summary>Reply details</summary><ul><li>Model: test</li></ul></details>')
+nb.add('code', 'x = 4', export=True)
+nb.add('raw', 'literal text')
+_p = _tf.mktemp(suffix='.ipynb')
+save_notebook(_p)
+_doc = _json.load(open(_p))                       # simulate nbdev-clean: wipe all metadata
+_doc['metadata'] = {}
+for _c in _doc['cells']: _c['metadata'] = {}
+_json.dump(_doc, open(_p, 'w'))
+load_notebook(_p)
+assert [c.ctype for c in nb.cells] == ['note','prompt','assistant','code','raw'], [c.ctype for c in nb.cells]
+_a = nb.cells[2]
+assert _a.ctype == 'assistant' and _a.details and 'Model: test' in _a.details
+assert nb.cells[3].export and nb.cells[3].source == 'x = 4'
+assert nb.cells[1].source == 'What is 2+2?' and nb.cells[1].ctype == 'prompt'
+_os.remove(_p)
+print('round-trip survived a full metadata strip:', [c.ctype for c in nb.cells])
+```
+
+    round-trip survived a full metadata strip: ['note', 'prompt', 'assistant', 'code', 'raw']</doc><doc title="llms" desc="talking to a local LLM via Ollama -- tool selection, model listing, streaming replies"># llms
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Tool selection
+
+Which tool functions to offer the LLM. `_LOCAL_TOOLS` /
+`DEFAULT_TOOL_SELECTION` define the available sources and the default
+set;
+[`get_tool_list`](https://drscotthawley.github.io/boopiter/llms.html#get_tool_list)
+assembles the actual function list from whichever sources are selected.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L38"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### get_tool_list
+
+``` python
+def get_tool_list(
+    selection:dict=None, # which tool sources to include -- keys 'boopiter'/'slmn-nbtools'/'slmn-misc'/'slmn-remote', bool values (see the wrench-icon Tools menu in the GUI). Defaults to DEFAULT_TOOL_SELECTION if omitted. 'slmn-remote', even when selected, only ever contributes its safe/read-only subset (_SLMN_REMOTE_SAFE) -- remote_launch/remote_status/remote_smoke_test (arbitrary remote command execution over ssh) are never included here, by design, regardless of selection.
+)->list:
+```
+
+*Assemble the list of tool functions to offer an LLM, from whichever
+sources are selected. Returns actual callables, not names – pass
+straight to prompt_llm(tools=…). Per-notebook ad-hoc tools (see
+add_tool()) are layered on top of this by the caller, not included
+here.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L72"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### sync_ollama_loaded
+
+``` python
+def sync_ollama_loaded(
+    keep:list
+)->list:
+```
+
+*Enforce the invariant that* only\* the models in `keep` stay resident
+in Ollama: unload every currently-loaded model that isn’t one of them.
+Returns the names actually unloaded. `keep` accepts bare model names or
+‘ollama/’-prefixed ids interchangeably, and ignores both None and
+non-Ollama ids like ‘deaddrop/…’, so a caller can pass
+nb.standard_model/nb.reasoning_model straight through. Sweeping the live
+/api/ps list – instead of remembering which model we last switched away
+from – is the point: it also clears models left resident by a previous
+boopiter process, by another client of the same Ollama server, or by an
+earlier unload that quietly failed. It’s idempotent, so calling it on
+every model-menu change costs one cheap GET when there’s nothing to
+do.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L62"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### unload_ollama_model
+
+``` python
+def unload_ollama_model(
+    name:str
+)->bool:
+```
+
+*Evict one model from Ollama’s memory, given its bare name (‘qwen3:14b’
+– NOT the ‘ollama/’-prefixed id used everywhere else, see
+get_ollama_list()). Done over HTTP, as a generate request with
+keep_alive=0 (Ollama’s documented way to drop a model immediately),
+rather than by shelling out to `ollama stop`: the CLI has to be on the*
+server process’s\* PATH – which it often isn’t when boopiter is launched
+from a desktop launcher or systemd unit rather than a login shell – and
+it always talks to localhost, whereas this honours OLLAMA_URL like the
+rest of this module. Returns whether it worked, and warns (rather than
+failing silently) if not, since a silent no-op here looks exactly like a
+memory leak.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L56"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### ollama_loaded
+
+``` python
+def ollama_loaded()->list:
+```
+
+*Names of the models Ollama is currently holding in memory, per its
+/api/ps endpoint – not to be confused with get_ollama_list()‘s
+/api/tags, which lists every model on disk whether loaded or not.
+Returns \[\] rather than raising if Ollama is unreachable, so callers
+can treat ’no server’ and ‘nothing loaded’ the same way.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Listing available models
+
+[`get_ollama_list`](https://drscotthawley.github.io/boopiter/llms.html#get_ollama_list)
+reads every locally-available Ollama model from `/api/tags`;
+[`get_model_list`](https://drscotthawley.github.io/boopiter/llms.html#get_model_list)
+wraps it (and any other sources) into a uniform list of model-info
+dicts.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L90"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### get_ollama_list
+
+``` python
+def get_ollama_list(
+    strict:bool=False
+)->list:
+```
+
+\*Get info on every locally-available Ollama model: the raw /api/tags
+entry (name, details incl. parameter_size/family) plus an added ‘id’ key
+(‘ollama/<model>’, the string used elsewhere as the model identifier –
+see nb.model) and a ‘capabilities’ list
+(e.g. ‘vision’/‘tools’/‘thinking’). Capabilities are NOT in /api/tags –
+only the per-model /api/show endpoint reports them (see \_ollama_caps,
+which caches them and is why calling this repeatedly is cheap). Those
+probes are independent per model and each is almost entirely network
+wait, so cache misses are fetched on a small thread pool rather than in
+series – with a cold cache that turns N sequential round trips into
+roughly one. Returns \[\] and warns if Ollama is unavailable – unless
+`strict`, which raises instead, so a caller that already has a good
+listing (refresh_models(), re-checking on every brain-menu hover) can
+tell ‘Ollama is down’ apart from ‘Ollama has no models’ and keep showing
+what it had rather than blanking the menu on a transient hiccup. A model
+whose individual capability probe fails just gets an empty capability
+list, not a failed listing.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L107"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### get_model_list
+
+``` python
+def get_model_list(
+    strict:bool=False
+)->list:
+```
+
+\*Wrapper routine to get info dicts (see get_ollama_list()) for all
+available models from all sources. Live dead-drop sessions (see
+\_deaddrop_sessions) are listed as models too, one
+‘deaddrop/<session-id>’ entry each: selecting one in the brain-menu
+dropdown is what binds this notebook’s Prompt cells to that session’s
+inbox/outbox. Modelling the binding as a model choice – rather than as a
+global set once per process – means it’s visible in the UI, saved with
+the notebook, and per-notebook, so several notebooks on different topics
+can each talk to their own session without crossing wires, and a restart
+can’t silently reroute one of them. ‘deaddrop/claude’ remains the
+original single-file prompts/ + responses/ route.\*
+
+</div>
+
+``` python
+get_model_list()
+```
+
+    ['ollama/qwen2.5-coder:latest',
+     'ollama/gemma3:4b',
+     'ollama/llama3.1:latest',
+     'ollama/qwen2.5:latest']
+
+<div class="boopcell boop-note">
+
+## Forcing streaming responses
+
+A monkeypatch (`_call`, over the saved `_orig_chat_call`) makes the chat
+client always yield streamed responses, working around a limitation in
+the underlying library.
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Reply metadata
+
+[`_details_block`](https://drscotthawley.github.io/boopiter/llms.html#_details_block)
+builds the collapsible `<details>` panel of call metadata (model, finish
+reason, token counts, tool calls);
+[`_reply_details_html`](https://drscotthawley.github.io/boopiter/llms.html#_reply_details_html)
+fills it in for a real API response. Rendered with escaped FT
+components, not raw HTML.
+
+</div>
+
+<div class="boopcell boop-note">
+
+### Why tools aren’t passed as native API `tools=`
+
+Early on, enabling any tool source made local models (tested worst-case:
+`qwen2.5-coder:latest`, but reproduced up through `qwen3.6:27b`)
+reflexively try to call a tool on *every* prompt, including plain “write
+me some code” requests that had nothing to do with any tool – producing
+garbled, empty, or JSON-as-prose replies instead of a normal answer.
+
+The root cause: Ollama/Qwen’s chat template wraps any non-empty `tools=`
+API parameter into a `<tools>...</tools>` special-token block. That
+structural block biases these models into feeling obligated to fill a
+`<tool_call>` slot, regardless of `tool_choice` (`'auto'` vs. the
+default `None` made no measurable difference) and regardless of a system
+prompt saying “only use a tool if you actually need one” (that improved
+*presentation* – coherent prose vs. raw JSON – but didn’t stop the
+reflex). Bigger models weren’t immune either, just failed differently
+(e.g. the tool call landing in `reasoning_content` while `content` came
+back empty).
+
+The fix, found by reading how SolveIt’s `dialoghelper`/`pyskills` solve
+the same problem: never populate the native `tools=` parameter. Instead,
+describe the available functions in the system prompt as plain Python
+callables already present in the execution namespace (see
+[`tools_system_prompt()`](https://drscotthawley.github.io/boopiter/llms.html#tools_system_prompt)
+below), and let the model express “I need a tool” by writing an ordinary
+\`\``python code block as part of its reply -- the same code-generation skill these models are already reliably good at, rather than their much less reliable native function-calling judgment. [`stream_llm_reply()`](https://drscotthawley.github.io/boopiter/llms.html#stream_llm_reply) (and [`\_push_tools()`](https://drscotthawley.github.io/boopiter/cells.html#_push_tools) in`cells.py\`,
+which keeps those functions live in the shared kernel namespace)
+implement that pattern end to end.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L246"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### stream_llm_reply
+
+``` python
+def stream_llm_reply(
+    context:str, model:str, tools:list | None=None, think:str | None=None, images:list | None=None,
+    keep_alive_min:int | None=None, num_ctx:int | None=None
+):
+```
+
+\*Generator streaming a model reply token-by-token, using the
+code-callable tool strategy (see tools_system_prompt) instead of native
+tool-calling. `images` is an optional list of raw image bytes to send
+alongside the context – pass them only for models that advertise the
+vision capability (the caller checks; see cells.py’s
+\_start_prompt_run), as non-vision models error or ignore them. They
+ride as extra message parts via lisette’s mk_msg (bytes -\> base64 data
+URL), with the context text last. The dead-drop route ignores them for
+now – file-based image handoff is its own upcoming feature. Yields
+(‘delta’, text) chunks as they arrive, then a final (‘final’, content,
+details_html) tuple once the response completes. Callers
+(e.g. cells.py’s \_run_prompt_bg) drive this into their own
+background-thread/UI state – that part isn’t LLM-specific, so it stays
+out of this module. `think` (‘l’/‘m’/‘h’ or None) – see prompt_llm(). A
+`model` starting with ‘deaddrop/’ is routed through
+\_deaddrop_stream_reply() instead of a real API call – everything else
+about this function’s contract (the yielded tuple shapes) is identical
+either way, so no caller needs to know or care which one answered.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L188"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### prompt_llm
+
+``` python
+def prompt_llm(
+    context:str, model:str='ollama_chat/qwen2.5-coder:latest', tools:list | None=None, think:str | None=None,
+    keep_alive_min:int | None=None, num_ctx:int | None=None
+)->tuple:
+```
+
+\*Send a prompt to the LLM; returns (content, details_html) – the reply
+text itself, and a separate collapsible
+<details>
+
+block of call metadata (model/tokens/finish reason/reasoning) meant to
+be stored apart from the reply (see Cell.details), not mixed into it.
+`tools`, if given, are described via tools_system_prompt()
+(code-callable, not native tool-calling) – see there for why. `think`,
+if given (‘l’/‘m’/‘h’), is lisette’s own reasoning-effort control –
+passed straight through to litellm, which maps it to Ollama’s ‘think’
+request field; only meaningful for a model that actually supports
+thinking (see the brain-icon reasoning-model picker).\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L160"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### tools_system_prompt
+
+``` python
+def tools_system_prompt(
+    tools:list | None
+)->str:
+```
+
+*Build a system-prompt block describing `tools` as plain Python
+functions already available in the model’s execution environment – NOT
+passed as native API tool schemas. This sidesteps a real reliability
+problem found via testing: Ollama/Qwen’s chat template wraps any
+non-empty `tools=` into a `<tools>` special-token block that biases even
+capable local models into reflexive, often-wrong tool calls, regardless
+of tool_choice or how carefully the system prompt says ‘only if needed’
+(both were tried and didn’t help). Routing tool use through the model’s
+own code-writing judgment instead – which local models are much more
+reliably good at – fixed it in practice. Same approach
+dialoghelper/pyskills use for SolveIt (not a dependency here, just the
+inspiration). Returns ’’ if `tools` is empty, so no system prompt is
+added at all when there’s nothing to describe.*
+
+</div>
+
+``` python
+s ="Today is July 18. Who's one famous person with this birthday?"
+c = prompt_llm(s) 
+print(str(c[0]))
+s = """
+    Tell me the previous question I asked you, from the previous prompt. 
+    I want to see if you retain state between calls"""
+c = prompt_llm(s) 
+print(str(c[0]))
+```
+
+    One famous person born on July 18th is Mark Zuckerberg, the co-founder and CEO of Facebook.
+    I'm sorry for any confusion, but as an AI language model, I don't have the capability to remember or retain information across separate interactions. Each response is generated independently based on the input provided in each session. If you have a specific question or need assistance with something particular, feel free to ask!
+
+<div class="boopcell boop-note">
+
+### Tool Use
+
+Example tool from lisette docs:
+
+</div>
+
+``` python
+def add_numbers(
+    a: int,  # First number to add
+    b: int   # Second number to add  
+) -> int:
+    "Add two numbers together"
+    return a + b
+```
+
+``` python
+res = prompt_llm("What's 47 + 23? Use the tool.", tools=[add_numbers])
+print(res[0])
+```
+
+    The sum of 47 and 23 is 70. I have completed my task as requested. If you need further assistance or have additional questions, feel free to ask!
+
+``` python
+# Confirms get_tool_list() assembles real, callable tools according to a selection dict.
+from boopiter.llms import get_tool_list, DEFAULT_TOOL_SELECTION
+print(len(get_tool_list()), "tools with defaults:", [t.__name__ for t in get_tool_list()])
+print(len(get_tool_list({'boopiter': True, 'slmn-nbtools': False, 'slmn-misc': False, 'slmn-remote': True})), "tools with only boopiter+remote")
+```
+
+</div></doc><doc title="cells" desc="rendering + HTTP routes + app orchestration -- the FastHTML UI"># cells
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## DaisyUI + app setup
+
+CDN headers for DaisyUI + Tailwind, plus `KatexMarkdownJS()` (renders
+`.marked` elements as markdown + KaTeX) and the command-mode hotkey
+listener.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L51"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### read_file_content
+
+``` python
+def read_file_content(
+    file_path
+):
+```
+
+*Call self as a function.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Authentication
+
+A `?token=` query param (printed at startup) or the `/login` form gates
+every route except health-check/login itself – see
+[`_check_auth`](https://drscotthawley.github.io/boopiter/cells.html#_check_auth),
+the `Beforeware` wired into `app` below. Every code cell already runs
+with this process’s own OS permissions, so an unauthenticated boopiter
+listening on a shared network is equivalent to an open shell;
+`boopiter launch --no_auth` opts out explicitly for a fully trusted
+network.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L160"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### login
+
+``` python
+def login(
+    token:str=None, session:NoneType=None
+):
+```
+
+\*Token-gate entry point. GET (no `token` field submitted) shows the
+sign-in form; POST checks it against BOOPITER_TOKEN and, on match,
+stamps the session so \_check_auth lets every other route through. The
+other way in is a `?token=` query param on any URL – what the server
+prints at startup – this form is the fallback for typing the token in by
+hand.\*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Code execution
+
+A single IPython shell backs every code cell (like the lesson’s `ex`),
+with errors returned as text instead of raised.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L192"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_code_poll
+
+``` python
+def run_code_poll(
+    id:int, poll_n:int=0
+)->fastcore.xml.FT | tuple:
+```
+
+\*Poll a running code cell’s execution. While still running, returns
+just the small output div (re-triggering itself, with an escalating
+delay – see \_POLL_SCHEDULE) so the code block above it never flickers.
+Once done, replaces the whole cell out-of-band – the primary target
+(#run-out-N) is about to be destroyed along with it, so the primary
+response body is empty.\*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Cell + Notebook model
+
+A [`Cell`](https://drscotthawley.github.io/boopiter/notebook.html#cell)
+carries its type, source, optional output, and a `visible` flag (the eye
+toggle — whether the LLM sees it).
+[`Notebook`](https://drscotthawley.github.io/boopiter/notebook.html#notebook)
+is the in-memory store of cells, the composer’s selected type, and the
+currently `selected` cell (for hotkeys).
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L217"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### pending_code_cell
+
+``` python
+def pending_code_cell(
+    c:Cell, text:str='', scroll:bool=False
+)->FT:
+```
+
+\*Placeholder for a code cell whose execution is still running in the
+background: a static code view plus a self-polling output area
+(\_run_output_div) that swaps itself out for the real render_cell() once
+done. `scroll=True` (set only by Run All) tags the cell div so the
+client scrolls it into view as it starts – see boopScrollRunAll() in
+edit.js.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L236"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_code_cell
+
+``` python
+def run_code_cell(
+    c:Cell, scroll:bool=False
+)->FT:
+```
+
+*Tell one code cell to run: stamp it with the current time, then kick
+off its streaming background execution. The single shared entry point
+for the play button, Shift-Enter, and Run All (which passes scroll=True
+so each cell scrolls into view as it starts). A solo run (scroll=False)
+cancels any in-flight or leftover Run All, so it can never chain into
+unrelated cells.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## LLM Interaction
+
+The whole point of the visibility toggle: context is only the *visible*
+cells. The stub proves the plumbing by reporting what it can see; swap
+[`stub_reply`](https://drscotthawley.github.io/boopiter/cells.html#stub_reply)
+for a real model call later.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L302"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### pending_prompt_cell
+
+``` python
+def pending_prompt_cell(
+    prompt_id:int, text:str='', oob_swap:str=None
+)->FT:
+```
+
+\*Placeholder shown while a Prompt’s LLM reply streams in the
+background: a pulsing ‘Tricky…’ indicator plus whatever text has
+accumulated so far, shown as plain preformatted text (not
+markdown-rendered – mid-stream markdown is often invalid, e.g. an
+unclosed code fence; only the finished reply gets the full ‘.marked’
+treatment). hx-trigger=load polls run_prompt_poll() every 300ms until
+the reply is complete. `oob_swap`, if given, delivers this placeholder
+out-of-band (see \_oob()) instead of being the response’s main swap
+target.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L347"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_prompt_poll
+
+``` python
+def run_prompt_poll(
+    id:int
+)->fastcore.xml.FT | str:
+```
+
+*Poll a streaming Prompt reply – returns the current partial text while
+still running (re-triggering itself), or finalizes into the real
+Assistant cell once done.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L361"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### add_tool
+
+``` python
+def add_tool(
+    fn:callable
+)->callable:
+```
+
+*Register `fn` as a tool the LLM can call on future Prompt-cell runs.
+Also usable as a decorator: `@add_tool`.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L385"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### llm_context
+
+``` python
+def llm_context(
+    nb:Notebook, cur_id:int | None=None
+)->str:
+```
+
+\*Exactly what a real model would receive: the visible cells up through
+`cur_id` (default: all), in order, with each code cell’s outputs
+appended (via \_output_text) so ‘run this, then ask about the result’
+actually works. The `cur_id` cell itself is always included even if
+toggled invisible – it’s the question being asked, and dropping it would
+silently send a context with no prompt at the end.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L402"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### stub_reply
+
+``` python
+def stub_reply(
+    nb:Notebook, prompt:str
+)->str:
+```
+
+*Fake/placeholder LLM reply used when no model is available (lets you
+still test the GUI).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L421"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### ensure_models
+
+``` python
+def ensure_models()->None:
+```
+
+*Populate nb.models (info dicts, see get_model_list()) plus default
+picks for both models, tolerating an unreachable local LLM server. Run
+once at startup; refresh_models() takes over from there, so an Ollama
+that wasn’t running yet when boopiter started is picked up on the next
+brain-menu hover rather than needing a server restart.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Rendering
+
+Each type gets a colored left border (matching the SolveIt screenshot:
+raw=yellow, code=blue, note=green, prompt/assistant=red). The selected
+cell gets a ring; hidden-from-LLM cells are dimmed. Note cells render as
+markdown via the `.marked` class (KaTeX, images, HTML).
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L490"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### Icon
+
+``` python
+def Icon(
+    name:str, cls:str='size-4', filled:bool=False
+)->FT:
+```
+
+\*A heroicons SVG by name (see ICONS), inlined so
+`stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too)
+matches the button’s text color. Thin wrapper over \_svg_icon().\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L495"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### IconBtn
+
+``` python
+def IconBtn(
+    name:str, title:str, **kw
+)->FT:
+```
+
+*A small ghost-style button showing heroicon `name`, with a hover
+tooltip of `title`.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L501"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### cell_toolbar
+
+``` python
+def cell_toolbar(
+    c:Cell
+)->FT:
+```
+
+*The row of icon buttons (copy, export toggle, visibility, run, move,
+delete) shown in a cell’s header.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L556"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### type_dropdown
+
+``` python
+def type_dropdown(
+    c:Cell
+)->FT:
+```
+
+*Click the cell-type word to switch it (code/note/prompt/raw). Scoped to
+just this cell.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L571"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### cell_header
+
+``` python
+def cell_header(
+    c:Cell, running:bool=False
+)->FT:
+```
+
+*The top row of a cell: type dropdown, id/timestamp, and the toolbar.
+`running=True` (used by pending_code_cell() while a background execution
+is still in flight) adds a pulsing ‘Running…’ indicator that disappears
+once the cell finishes, whether it succeeded or errored. flex-wrap lets
+the toolbar drop to its own line on narrow (mobile) viewports instead of
+squeezing/overlapping.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L587"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### cell_body
+
+``` python
+def cell_body(
+    c:Cell
+)->FT:
+```
+
+\*Note/prompt/assistant render as markdown; raw is bare text. Code cells
+never reach here – render_cell() routes them to
+code_view()/code_editor(). An Assistant cell with call metadata
+(Cell.details) shows it in a collapsed
+<details>
+
+block above the reply.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L611"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### render_output_blocks
+
+``` python
+def render_output_blocks(
+    blocks:list
+)->list:
+```
+
+\*Render each of a code cell’s output blocks (see Cell.output /
+run_code()) to its appropriate FT: an <img> for images, raw markup for
+HTML/SVG, client-side-rendered markdown for text/markdown (same
+‘.marked’ pipeline as note cells), pretty-printed for JSON, and a plain
+(ANSI-aware)
+<pre>
+
+for stream/error text.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L632"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### code_view
+
+``` python
+def code_view(
+    c:Cell
+)->FT:
+```
+
+*Static, syntax-highlighted (no live CodeMirror) view of a code cell –
+click to load the real editor. Keeping non-focused cells static is what
+makes theme switches etc. fast on notebooks with many code cells.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L644"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### code_editor
+
+``` python
+def code_editor(
+    c:Cell
+)->FT:
+```
+
+*The live CodeMirror editor for a code cell – only rendered for the cell
+currently being edited. Shift/Ctrl/Cmd+Enter or the play button runs.
+c.source never contains the ‘\#| export’ pragma – see Cell.export / the
+bookmark toggle in cell_toolbar.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L657"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### render_cell
+
+``` python
+def render_cell(
+    c:Cell, oob:NoneType=None
+)->FT:
+```
+
+*Every cell type renders statically and opens its editor on click; only
+the actively-edited cell gets a live widget (CodeMirror for code, a
+plain textarea otherwise). `oob` is forwarded to
+[`_cell_outer`](https://drscotthawley.github.io/boopiter/cells.html#_cell_outer)
+– see there.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L673"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### render_cell_edit
+
+``` python
+def render_cell_edit(
+    c:Cell
+)->FT:
+```
+
+*Inline editor. Code cells use CodeMirror (Python highlight, no wrap);
+notes/raw use a textarea. Shift/Ctrl/Cmd+Enter saves.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L691"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### render_nb
+
+``` python
+def render_nb()->FT:
+```
+
+*Render every cell in the notebook, in order, inside the \#notebook
+container div.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Composer
+
+The bottom bar: type tabs, a textarea, Submit. Picking a tab sets the
+type server-side; Submit creates the cell (running it, if code; spawning
+an Assistant reply, if prompt).
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L696"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### composer
+
+``` python
+def composer(
+    draft:str='', oob:bool=False
+)->FT:
+```
+
+*The bottom-of-page input bar: type tabs, a source textarea, and a Boop
+(submit) button.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L722"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### render_app
+
+``` python
+def render_app(
+    draft:str=''
+)->FT:
+```
+
+*The whole notebook view: all cells plus the composer, wrapped in one
+container div.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## Routes
+
+Composer/toolbar routes plus the command-mode routes driven by hotkeys
+([`select`](https://drscotthawley.github.io/boopiter/cells.html#select),
+[`select_delta`](https://drscotthawley.github.io/boopiter/cells.html#select_delta),
+[`insert`](https://drscotthawley.github.io/boopiter/cells.html#insert),
+[`del_selected`](https://drscotthawley.github.io/boopiter/cells.html#del_selected),
+[`settype_selected`](https://drscotthawley.github.io/boopiter/cells.html#settype_selected)).
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L728"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### theme_swap
+
+``` python
+def theme_swap()->FT:
+```
+
+*DaisyUI sun/moon swap; drives boopApplyTheme (default dark).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L741"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### fname_display
+
+``` python
+def fname_display()->FT:
+```
+
+*The clickable filename shown in the top bar; click to rename.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L750"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### rename_form
+
+``` python
+def rename_form()->FT:
+```
+
+*Swap the filename display for a text input, focused and pre-selected,
+to rename the notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L792"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### brain_menu
+
+``` python
+def brain_menu(
+    icon_cls:str
+)->FT:
+```
+
+*Hover menu (styled like tools_menu) for picking the Standard and
+Reasoning models, SolveIt-style – the Reasoning picker only lists models
+advertising Ollama’s ‘thinking’ capability (see
+get_ollama_list()/ensure_models()), with an L/M/H effort control
+alongside it (passed through as Chat(…)(think=…) – see
+stream_llm_reply()). The brain icon itself doubles as a toggle: click it
+to switch whether the reasoning or standard model actually answers
+Prompt cells (nb.use_reasoning/active_model()) – its SVG strokes turn
+cyan (matching the ‘Tricky…’ streaming indicator’s color, our existing
+‘this is thinking’ cue) while on. Re-renders itself wholesale on toggle
+(hx_target=self) since the button’s own color has to change along with
+the menu.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L847"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_standard_model
+
+``` python
+def set_standard_model(
+    model:str
+)->FT:
+```
+
+\*Change the Standard-model pick in the brain menu, then re-render the
+menu so the new pick’s checkmark shows (see \_model_select). Only
+affects Prompt answers directly if the reasoning toggle is currently off
+– see nb.active_model().\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L856"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_reasoning_model
+
+``` python
+def set_reasoning_model(
+    model:str
+)->FT:
+```
+
+\*Change the Reasoning-model pick in the brain menu (restricted there to
+‘thinking’-capable models), then re-render the menu so the new pick’s
+checkmark shows (see \_model_select). Only affects Prompt answers
+directly if the reasoning toggle is currently on – see
+nb.active_model().\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L865"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### toggle_reasoning
+
+``` python
+def toggle_reasoning()->FT:
+```
+
+*The brain-icon click: flip whether the reasoning or standard model
+answers Prompt cells. Returns the whole re-rendered brain_menu(), since
+the button itself needs to pick up its new highlighted state.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L873"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### refresh_models
+
+``` python
+def refresh_models():
+```
+
+*Re-list the available models and re-render the brain menu if anything
+actually changed – wired to mouseenter on the menu itself (see
+brain_menu()), so starting Ollama* after\* boopiter no longer means
+restarting the server to see its models; hovering the brain icon is
+enough. Returns 204 No Content whenever nothing changed, which tells
+htmx to swap nothing at all: re-rendering an open dropdown on every
+hover would make the menu visibly flicker, and re-rendering it while the
+pointer is inside it risks disturbing the CSS :hover state keeping it
+open. Cheap enough to run on hover – ~8ms for the /api/tags listing,
+with the expensive per-model capability probes served from cache (see
+\_ollama_caps) – and it runs alongside the CSS-driven dropdown rather
+than gating it, so the menu opens instantly either way. An unreachable
+Ollama does NOT clear the list (that’s what strict=True distinguishes:
+‘Ollama is down’ vs ‘Ollama has no models’); it flips nb.ollama_ok so
+the existing entries render greyed and unclickable, keeping your current
+pick intact through a restart or a network hiccup. Picks are otherwise
+repaired, not reset (see \_default_picks): a model that has genuinely
+vanished gets replaced, one you chose is left alone.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L900"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_keep_alive
+
+``` python
+def set_keep_alive(
+    minutes:int=None
+)->str:
+```
+
+*Persist a new keep-alive from the spinner. Clamped at -1, the lowest
+value Ollama gives a distinct meaning: any negative keep_alive means
+‘keep this model loaded indefinitely’, so -2 and -1 do the same thing
+and there’s no reason to let the box go lower. Takes effect on the next
+model call; nothing to re-render, hence hx-swap=none.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1004"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### share_dismiss
+
+``` python
+def share_dismiss()->FT:
+```
+
+*Close the share notice, emptying its slot. Doesn’t cancel anything – an
+in-flight publish finishes regardless; this only stops showing it.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L996"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### share_poll
+
+``` python
+def share_poll()->fastcore.xml.FT | starlette.responses.Response:
+```
+
+*Re-render the share notice, but only when its state has actually
+changed – otherwise 204 No Content, which tells htmx to swap nothing.
+With the notice polling on a repeating trigger, that means the element
+is left completely untouched between state changes, instead of being
+rebuilt every couple of seconds: rebuilding restarted the spinner and
+made the whole notice blink.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L987"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### share_nb
+
+``` python
+def share_nb(
+    vis:str='public'
+)->FT:
+```
+
+*Share the current notebook, listed on the boops index or not (see
+share_menu). Saves it to disk first – the render reads the file, and the
+published page should match what’s on screen – then publishes on a
+background thread, since a Quarto render plus a push takes far too long
+to hold an HTTP response open. Returns the notice immediately so the
+click visibly does something; it polls itself from there.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L957"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### share_panel
+
+``` python
+def share_panel()->FT:
+```
+
+*The share notice: progress while rendering and publishing, then the
+published URL with a button to copy it. Persistent – it stays until
+dismissed, because its whole job is to leave the link on screen long
+enough to paste somewhere.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L909"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### share_menu
+
+``` python
+def share_menu(
+    icon_cls:str
+)->FT:
+```
+
+\*The share button: a hover menu (same idiom as tools_menu/brain_menu)
+offering Public or Unlisted, rather than a plain button. Both publish
+the same page to the same URL; the choice only decides whether the
+site’s index links to it, and re-sharing with the other choice flips
+that – so this is a state toggle, not a one-way door. A hover menu
+rather than a modal or a native <select>, because a real select renders
+its options as OS chrome outside the page and collapses the popup the
+moment the pointer moves onto them (see \_model_select).\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1022"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_num_ctx
+
+``` python
+def set_num_ctx(
+    n:int
+)->str:
+```
+
+*Pick a context window from the brain menu. Ignores anything not in
+NUM_CTX_CHOICES – the value goes straight into an Ollama request, and
+there’s no reason for this route to accept arbitrary sizes. Takes effect
+on the next model call; Ollama reloads the model whenever the requested
+window differs from the loaded one, which is also when the RAM actually
+changes.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1029"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_reasoning_effort
+
+``` python
+def set_reasoning_effort(
+    effort:str
+)->str:
+```
+
+*Set the L/M/H reasoning-effort radio in the brain menu – only
+meaningful while the reasoning model is in use (see
+nb.reasoning_effort/stream_llm_reply).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1050"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### file_menu
+
+``` python
+def file_menu()->FT:
+```
+
+*Hamburger dropdown: New / Open (file browser) / Save / Download /
+Restart Server.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1058"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### context_menu
+
+``` python
+def context_menu()->FT:
+```
+
+*The same New/Open/Save/Download/Restart Server menu as file_menu(), but
+shown wherever you right-click anywhere on the page (see boopContextMenu
+in theme.js), for people who reach for a right-click before the
+hamburger or the ‘s’ hotkey.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1065"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### file_browser_modal
+
+``` python
+def file_browser_modal()->FT:
+```
+
+*The (initially empty/hidden) dialog that hosts the file-browser
+listing, opened by file_menu()’s Open item.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1081"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### help_modal
+
+``` python
+def help_modal()->FT:
+```
+
+*Keyboard-shortcuts cheat sheet, opened by the ‘?’ button in the top
+bar. Same modal/backdrop pattern as file_browser_modal().*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1122"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### tools_menu
+
+``` python
+def tools_menu(
+    icon_cls:str
+)->FT:
+```
+
+\*Wrench-icon ‘Tools’ menu: hover to see checkboxes toggling which tool
+sources (see \_TOOL_SOURCE_LABELS/nb.tool_selection) get offered to the
+LLM on Prompt-cell runs – see get_tool_list(). DaisyUI’s dropdown-hover
+opens/closes purely via CSS on mouseenter/mouseleave, so no close button
+is needed.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1158"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### plugin_panel_poll
+
+``` python
+def plugin_panel_poll(
+    name:str
+)->FT:
+```
+
+\*Poll target for \_plugin_panel – just re-renders the same self-polling
+wrapper, which is what keeps the sparklines visibly scrolling while a
+plugin’s panel is open.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1180"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### top_bar
+
+``` python
+def top_bar()->FT:
+```
+
+*The whole navbar: file menu + logo + filename on the left, model
+pickers + kernel/theme controls on the right.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1226"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### boopiter_ping
+
+``` python
+def boopiter_ping()->str:
+```
+
+*Identity check so `boopiter launch` can tell a live boopiter instance
+apart from something else on the port.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1232"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### logo_png
+
+``` python
+def logo_png()->FileResponse:
+```
+
+*Serve the boopiter logo, used both as favicon and in the top bar.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1257"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### boopimg
+
+``` python
+def boopimg(
+    fname:str
+):
+```
+
+\*Serve a previously pasted image from \_IMAGES_DIR. Names are generated
+server-side at paste time (token_hex + a short extension), so a strict
+fullmatch on that shape is cheap and closes path traversal without any
+path canonicalization.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1240"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### paste_image
+
+``` python
+def paste_image(
+    data:str
+)->str:
+```
+
+\*Receive a pasted clipboard image as a base64 data URL (see the paste
+handler in static/edit.js), save it under \_IMAGES_DIR with a random
+collision-proof name, and return the markdown to insert at the caret.
+The markdown points at the /boopimg/ serving route (below), not the
+filesystem path – the browser needs a URL it can actually fetch for the
+image to render in the note’s preview, and the same string is what rides
+along in Cell.source to the LLM.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1265"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### tailwind_css
+
+``` python
+def tailwind_css()->FileResponse:
+```
+
+\*Serve the precompiled Tailwind CSS built by \_build_tailwind() at
+launch.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1271"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### index
+
+``` python
+def index()->tuple:
+```
+
+*The full page: title, top bar, the notebook+composer, and the
+save-toast slot.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1302"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### save_now
+
+``` python
+def save_now()->FT:
+```
+
+*Save the notebook to disk and show a toast confirming success (or
+failure).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1320"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### browse
+
+``` python
+def browse(
+    path:str | None=None
+)->FT:
+```
+
+*Jupyter-tree-style directory listing for the file-browser modal, rooted
+at BROWSE_ROOT.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1350"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### open_file
+
+``` python
+def open_file(
+    path:str
+)->RedirectResponse:
+```
+
+*Open a notebook found by the file browser. Redirects to / afterward so
+the address bar (and thus a later page reload) doesn’t stay pinned to
+this action – reloading /open_file?path=… would silently re-run the load
+and discard any unsaved edits made since.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1359"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### new_notebook
+
+``` python
+def new_notebook()->RedirectResponse:
+```
+
+*Discard the current notebook and start a blank one. Redirects to /
+afterward – same reasoning as open_file().*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1366"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### restart_server
+
+``` python
+def restart_server()->str:
+```
+
+*nbdev-export the notebooks as a real (blocking) subprocess – so we get
+a genuine exit code instead of guessing a delay – then clear **pycache**
+(WSL/Windows-mounted filesystems can have coarse mtime resolution, which
+can trick Python into serving stale cached bytecode right after a fast
+save-then-restart) and exec a fresh copy of this process (same PID, same
+port). Aborts (leaves the current process running) if export fails. Does
+NOT save the notebook first; Save manually beforehand if you want to
+keep unsaved edits.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1396"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### shutdown_server
+
+``` python
+def shutdown_server()->str:
+```
+
+*Cleanly exit boopiter: send this process SIGTERM, the same
+graceful-shutdown signal Ctrl-C sends, which uvicorn catches to drain
+in-flight requests and exit 0. Does NOT save the notebook first – Save
+manually beforehand if you want to keep unsaved edits.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1407"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### download
+
+``` python
+def download()->FileResponse:
+```
+
+*Save the notebook, then send it to the browser as a file download.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1414"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### rename
+
+``` python
+def rename(
+    name:str
+)->FT:
+```
+
+*Rename and persist the notebook to `{new_name}.ipynb` in the server’s
+cwd.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1422"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### restart_kernel
+
+``` python
+def restart_kernel()->str:
+```
+
+\*Reset the shared IPython shell’s namespace, clearing all user-defined
+variables/functions, then re-pushing nb/add_tool/the current tool
+selection – \_shell.reset() wipes those along with everything else.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1431"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_all
+
+``` python
+def run_all()->FT:
+```
+
+*Run every code cell top-to-bottom, one at a time – exactly like
+clicking play on each in turn. Each cell stamps its own timestamp,
+streams its own output, and scrolls into view as it starts; the sequence
+stops at the first cell that errors (see run_code_poll’s chaining).
+Prompt/Note/Raw/Assistant cells are skipped.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1443"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### interrupt_kernel
+
+``` python
+def interrupt_kernel()->str:
+```
+
+\*Best-effort interrupt: inject a KeyboardInterrupt into whichever
+background thread(s) are currently running – a code cell (\_run_state)
+and/or a streaming Prompt reply (\_prompt_state), since those are
+independent slots and could both be active. Uses CPython’s
+PyThreadState_SetAsyncExc, the same low-level trick real kernels use for
+SIGINT-based interrupts. It fires at the interrupted thread’s next
+bytecode boundary, so it reliably breaks ordinary Python loops (e.g. a
+tqdm-wrapped for-loop, or the token-by-token loop in \_run_prompt_bg)
+but can’t preempt a single blocking C call already in flight.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1457"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### toggle_tool_source
+
+``` python
+def toggle_tool_source(
+    key:str
+)->str:
+```
+
+*Toggle one entry in nb.tool_selection (the wrench-icon Tools menu – see
+top_bar()). The checkbox already flips itself natively in the browser;
+this just keeps the server-side selection in sync, so no DOM update is
+needed in response.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1464"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_type
+
+``` python
+def set_type(
+    t:str
+)->FT:
+```
+
+*Change the composer’s current cell type (what a new cell becomes when
+you hit Boop).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1470"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### add_cell
+
+``` python
+def add_cell(
+    t:str, source:str
+)->list:
+```
+
+\*Create a cell of type `t`: run it if code, just create it if prompt
+(its Assistant reply streams in asynchronously – see
+\_start_prompt_run/pending_prompt_cell). Returns the new cell(s).\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1482"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### submit_cell
+
+``` python
+def submit_cell(
+    source:str
+)->tuple:
+```
+
+*Append only the new cell(s) to \#notebook and reset the composer
+out-of-band, so untouched cells’ editors are never re-created. A
+just-submitted Prompt gets a ‘Tricky…’ placeholder that streams its own
+reply.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1494"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### split
+
+``` python
+def split(
+    source:str, pos:int
+)->tuple:
+```
+
+*Split the composer at the caret: head becomes a cell, tail stays in the
+composer.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1507"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### split_cell
+
+``` python
+def split_cell(
+    id:int, pos:int, source:str | None=None
+)->fastcore.xml.FT | tuple:
+```
+
+*Split an existing cell at caret position `pos`: it keeps the text
+before the cursor; a new cell of the same type (and, for code, the same
+export flag) is inserted right after it with the text after the cursor.
+`source` is the editor’s live buffer, sent along by boopSplitCell()
+because `pos` was measured against* it*, not against the server’s
+last-saved copy – splitting a cell you’d typed into but not yet saved
+used to slice the stale copy at an offset that indexed the new one.
+Neither half is (re-)executed, and any existing output is cleared – it
+was produced by the* whole\* original code, so it doesn’t correctly
+belong to either fragment alone (e.g. a plot statement can end up in
+either half after the split, stranding old output next to code that
+didn’t produce it). Blank lines right at the split point (e.g. the PEP8
+spacer between two functions) are trimmed off the boundary – otherwise
+the new cell would start with an ugly-looking leading blank line.\*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1522"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### run_cell
+
+``` python
+def run_cell(
+    id:int
+)->FT:
+```
+
+*Run this cell (Code: kick off background execution and return a
+placeholder that streams its progress; Prompt: kick off the LLM call and
+return a placeholder that streams the reply in), so the caller can
+target just this cell instead of the whole notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1534"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### toggle_vis
+
+``` python
+def toggle_vis(
+    id:int
+)->str:
+```
+
+*Toggle whether this cell is visible to the LLM (shown/hidden in
+llm_context). Called via a plain fetch(), not htmx – boopToggleVis()
+(edit.js) already updated the eye icon and cell dimming instantly and
+optimistically on the client; this just persists that same flip
+server-side, no HTML response needed.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1543"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### toggle_export
+
+``` python
+def toggle_export(
+    id:int
+)->str:
+```
+
+*Toggle a code cell’s ‘\#| export’ flag (the bookmark icon in
+cell_toolbar). Called via a plain fetch(), not htmx – boopToggleExport()
+(edit.js) already updated the icon’s look instantly and optimistically
+on the client; this just persists that same flip server-side, no HTML
+response needed.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1552"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### del_cell
+
+``` python
+def del_cell(
+    id:int
+)->tuple:
+```
+
+*Delete this cell (or its Prompt+Assistant pair). Removes just the
+affected DOM node(s) out-of-band instead of re-rendering the whole
+notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1563"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### move_cell
+
+``` python
+def move_cell(
+    id:int, delta:int
+)->tuple:
+```
+
+*Move this cell (or its Prompt+Assistant pair) up (delta=-1) or down
+(delta=1). Rather than re-rendering the whole notebook, this deletes the
+moved block’s DOM node(s) out-of-band and reinserts them next to
+whichever cell/pair they swapped with – the rest of the notebook’s DOM
+(and the page’s scroll position) is never touched.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1589"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### select
+
+``` python
+def select(
+    id:int
+)->fastcore.xml.FT | tuple | str:
+```
+
+*Select this cell (highlights it and anchors j/k navigation). Updates
+just the newly- and previously-selected cells, not the whole notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1600"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### select_delta
+
+``` python
+def select_delta(
+    delta:int
+)->tuple:
+```
+
+*Move the selection up (delta=-1) or down (delta=1) – the j/k hotkeys.
+Triggered by a global hotkey (not a specific cell’s button), so the
+response carries out-of-band updates for whichever cells actually
+changed rather than a full re-render.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1614"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### insert
+
+``` python
+def insert(
+    where:str
+)->tuple:
+```
+
+*Insert a new blank cell above or below the current selection – the a/b
+hotkeys. The new cell’s type matches the selected cell’s own type
+(falling back to the composer’s current type if nothing’s selected, or
+if the selection is an Assistant cell, which isn’t directly authorable).
+Inserts the new cell out-of-band next to its anchor, and refreshes the
+previously-selected cell (to drop its highlight ring) rather than
+re-rendering the whole notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1636"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### pull_code_blocks
+
+``` python
+def pull_code_blocks()->tuple:
+```
+
+*The ‘w’ hotkey: copy every fenced code block out of the selected
+Assistant reply (or its paired Prompt) into new Code cells directly
+below it, in order – a low-friction way to try running code an LLM
+suggested without retyping it. No-op if nothing’s selected or there’s no
+Assistant reply with code fences.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1664"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### del_selected
+
+``` python
+def del_selected()->tuple:
+```
+
+*Delete the currently-selected cell (or its Prompt+Assistant pair) – the
+d-d hotkey.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1680"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### cut_selected
+
+``` python
+def cut_selected()->tuple:
+```
+
+*Cut the currently-selected cell (or its pair) to the clipboard – the x
+hotkey.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1694"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### copy_selected
+
+``` python
+def copy_selected()->str:
+```
+
+*Copy the currently-selected cell (or its pair) to the clipboard – the c
+hotkey.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1701"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### paste_selected
+
+``` python
+def paste_selected()->tuple:
+```
+
+*Paste the clipboard after the currently-selected cell – the v hotkey.
+Inserts the pasted cell(s) out-of-band, right after their anchor (or at
+the end, if nothing was selected), instead of re-rendering the whole
+notebook.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1723"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### settype_selected
+
+``` python
+def settype_selected(
+    t:str
+)->fastcore.xml.FT | str:
+```
+
+*Change the currently-selected cell’s type – the m/y/r hotkeys.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1733"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### set_ctype
+
+``` python
+def set_ctype(
+    id:int, t:str
+)->FT:
+```
+
+*Change one cell’s type in place; returns just that cell so the rest of
+the notebook is untouched.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1744"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### edit_cell
+
+``` python
+def edit_cell(
+    id:int
+)->FT:
+```
+
+*Switch this cell into its live editor (CodeMirror for code, a plain
+textarea otherwise).*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1753"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### view_cell
+
+``` python
+def view_cell(
+    id:int
+)->FT:
+```
+
+*Switch this cell back to its static (non-editing) view – used by the
+Cancel button and the Escape hotkey (see boopCancelEdit() in edit.js).
+Also clears nb.selected if it’s this cell – otherwise a code cell (whose
+editor is shown exactly while c.id == nb.selected, not via a separate
+edit flag like note/prompt/raw) would just redraw right back into edit
+mode.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1761"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### save_cell
+
+``` python
+def save_cell(
+    id:int, source:str
+)->fastcore.xml.FT | tuple:
+```
+
+*Commit an edited cell’s source (running it if it’s code, or
+re-prompting the LLM if it’s a prompt). Targets just this cell (and, for
+prompts, the paired Assistant cell) rather than the whole notebook, so
+editing a cell deep in a long notebook doesn’t blow away scroll
+position.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/cells.py#L1777"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### sync_cell
+
+``` python
+def sync_cell(
+    id:int, source:str
+)->str:
+```
+
+*Update a cell’s source WITHOUT executing it – used by Save to flush any
+editor content that was never explicitly run (Shift+Enter), matching
+Jupyter’s WYSIWYG save behavior.*
+
+</div>
+
+``` python
+# Run-All queue chaining, tested without any real background thread/timing (see run_all/run_code_poll):
+# construct an already-finished _RunState by hand and drive run_code_poll() directly, so the test is
+# fully deterministic. Covers the two behaviors run_all()'s docstring promises: advance on success,
+# stop-on-error abandons the rest of the batch untouched.
+nb.reset()
+c1 = nb.add('code', 'a'); c2 = nb.add('code', 'b'); c3 = nb.add('code', 'c')
+
+def _finish(cell_id, blocks):
+    "Simulate a background code run finishing -- same shape _run_code_bg produces -- without a real thread."
+    global _run_state
+    st = _RunState(cell_id)
+    st.blocks, st.done = blocks, True
+    _run_state = st
+
+# Seed the same Run-All state run_all() would for this 3-cell batch (skipping the real thread it
+# would normally start for c1 -- the chaining logic under test lives entirely in run_code_poll()).
+_run_all_queue, _run_all_current = [c2.id, c3.id], c1.id
+
+_finish(c1.id, [{'type':'stream', 'mime':None, 'data':'ok'}])
+run_code_poll(c1.id, poll_n=1)
+assert _run_all_current == c2.id, "success should advance Run All to the next queued cell"
+assert _run_all_queue == [c3.id], "the advanced-past cell should be popped off the queue"
+assert c1.output == [{'type':'stream', 'mime':None, 'data':'ok'}], "the finished cell's output should be recorded"
+
+_finish(c2.id, [{'type':'error', 'mime':None, 'data':'boom'}])
+run_code_poll(c2.id, poll_n=1)
+assert _run_all_queue == [] and _run_all_current is None, "an error should abandon the rest of the batch"
+assert c3.output is None, "c3 must never have been touched once the batch stopped"
+
+nb.reset()
+print('Run-All queue chaining verified: advances on success, stops on error')
+```
+
+``` python
+# A cell can be deleted while Run All is mid-batch (e.g. the user deletes a not-yet-reached cell
+# while an earlier one is still running) -- run_code_poll's chaining loop should skip straight past
+# it rather than choke on a missing id.
+nb.reset()
+c1 = nb.add('code', 'a'); c2 = nb.add('code', 'b'); c3 = nb.add('code', 'c')
+_run_all_queue, _run_all_current = [c2.id, c3.id], c1.id
+nb.remove(c2.id)  # deleted mid-run, while c1 is still "in flight"
+
+_finish(c1.id, [{'type':'stream', 'mime':None, 'data':'ok'}])
+run_code_poll(c1.id, poll_n=1)
+assert _run_all_current == c3.id, "the deleted cell should be skipped, landing on c3 instead"
+assert _run_all_queue == [], "nothing should be left queued after skipping straight to the last cell"
+
+nb.reset()
+print('Run-All queue skips a cell deleted mid-run')
+```
+
+<div class="boopcell boop-note">
+
+## Run it
+
+In a notebook, start the server and preview inline. Click a cell’s
+header to select it, then use command-mode keys: `A`/`B` insert
+above/below, `D D` delete, `J`/`K` (or arrows) move selection,
+`M`/`Y`/`R` change type. In the composer, `Cmd/Ctrl+/` toggles comments
+on the selected lines and `Cmd/Ctrl+Shift+-` splits at the caret. On WSL
+see the lesson’s port notes for reaching it from Windows.
+
+</div>
+
+``` python
+srv = JupyUvi(app)
+p(index())
+```
+
+    NameError: name 'app' is not defined
+    NameError: name 'app' is not defined
+
+    ---------------------------------------------------------------------------
+    NameError                                 Traceback (most recent call last)
+    File <ipython-input-1-db8d6d5e6a19>:2
+          1 #| eval: false
+    ----> 2 srv = JupyUvi(app)
+          3 p(index())
+
+    NameError: name 'app' is not defined
+
+</div>
+
+</div></doc><doc title="plugins" desc="the top-bar plugin protocol, plus a system-monitor plugin"># plugins
+
+
+<div class="boopcell boop-raw">
+
+</div>
+
+<div class="boopcell boop-note">
+
+
+</div>
+
+<div class="boopcell boop-note">
+
+## The plugin protocol
+
+[`Plugin`](https://drscotthawley.github.io/boopiter/plugins.html#plugin)
+is the base class: subclass it, set `name`/`icon`/`trigger`, and
+implement `render()` for the hover popup (plus an optional always-on
+background task).
+[`register`](https://drscotthawley.github.io/boopiter/plugins.html#register)
+is a class decorator that adds an instance to `PLUGINS`;
+[`start_plugins`](https://drscotthawley.github.io/boopiter/plugins.html#start_plugins)
+kicks off each one’s background task at server startup.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/plugins.py#L38"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### start_plugins
+
+``` python
+def start_plugins()->None:
+```
+
+*Call every registered plugin’s on_start() once. Wired into cells.py’s
+@app.on_event(‘startup’) so background samplers spawn on real boot
+only.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/plugins.py#L33"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### register
+
+``` python
+def register(
+    cls
+):
+```
+
+*Class decorator: instantiate `cls` and append it to PLUGINS.
+Registration = importing this module. Returns `cls` unchanged.*
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/plugins.py#L19"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### Plugin
+
+``` python
+def Plugin(
+    *args, **kwargs
+):
+```
+
+*Base class for a top-bar plugin. Subclass it, set
+`name`/`icon`/`trigger` (or in **init**), and override
+`on_start`/`render` as needed; decorate the subclass with @register to
+add it to PLUGINS. `icon` is ICONS-style path data (plain ‘d’ strings
+and/or (d, scale) pairs) so cells.py renders it through the exact same
+SVG machinery as its built-in icons. `trigger` is ‘hover’ (the only kind
+wired up so far) or ‘click’.*
+
+</div>
+
+<div class="boopcell boop-note">
+
+## The system-monitor plugin
+
+The first concrete plugin:
+[`SystemMonitor`](https://drscotthawley.github.io/boopiter/plugins.html#systemmonitor)
+samples CPU/RAM/GPU/VRAM into ring buffers on a background thread and
+renders them as
+[`_sparkline`](https://drscotthawley.github.io/boopiter/plugins.html#_sparkline)
+mini-charts in its popup. GPU comes from
+[`_gpu_sample`](https://drscotthawley.github.io/boopiter/plugins.html#_gpu_sample)
+shelling out to `nvidia-smi` (the same approach as
+[`slmn.misc.gpu_free`](https://drscotthawley.github.io/slmn/misc.html#gpu_free))
+on non-Mac hosts, or
+[`_gpu_sample_darwin`](https://drscotthawley.github.io/boopiter/plugins.html#_gpu_sample_darwin)
+reading Apple Silicon’s IOKit registry on macOS.
+
+</div>
+
+<div class="prose" data-markdown="1">
+
+------------------------------------------------------------------------
+
+<a
+href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/plugins.py#L87"
+target="_blank" style="float:right; font-size:smaller">source</a>
+
+### SystemMonitor
+
+``` python
+def SystemMonitor(
+    maxlen:int=300, interval:float=2.0
+):
+```
+
+\*First plugin: continuously logs CPU%, system-RAM%, GPU-util%, and
+VRAM% into ring buffers in the background (whether or not its panel is
+open), and plots the accumulated history as inline-SVG sparklines when
+hovered. GPU comes from nvidia-smi (\_gpu_sample) on non-Mac hosts or
+the IOKit registry (\_gpu_sample_darwin) on macOS; VRAM is nvidia-only –
+Apple Silicon’s unified memory has no separate pool to report. Rows just
+go empty/‘–’ if unavailable, no separate placeholder needed.\*
+
+</div>
+
+``` python
+# quick sanity check (does NOT start the sampler thread -- that only happens via on_start())
+assert any(isinstance(p, SystemMonitor) for p in PLUGINS), "SystemMonitor should auto-register"
+sm = next(p for p in PLUGINS if isinstance(p, SystemMonitor))
+sm.cpu.extend([12, 34, 56, 30]); sm.ram.extend([40, 42, 41])
+sm.gpu.extend([0, 5, 80]); sm.vram.extend([20, 21, 55])
+panel = sm.render()             # should not raise
+spark = _sparkline([10, 90, 50])
+assert 'polyline' in to_xml(spark).lower()
+assert 'System monitor' in to_xml(panel)
+print('registered plugins:', [p.name for p in PLUGINS])
+print('_gpu_sample() ->', _gpu_sample())  # None if no nvidia-smi on this box; a (util%, vram%) tuple otherwise
+print('_gpu_sample_darwin() ->', _gpu_sample_darwin())  # None off macOS or if ioreg has no AGXAccelerator; a bare util% otherwise
+```</doc></docs><optional><doc title="API list" desc="full symbol + docstring listing for the whole package"># boopiter Module Documentation
+
+## boopiter.cells
+
+> The SolveIt-style cell GUI: a stack of typed cells (code / note / prompt / raw),
+> 
+> Docs: https://drscotthawley.github.io/boopiter/cells.html.md
+
+- `@rt('/login') def login(token, session)`
+    Token-gate entry point. GET (no `token` field submitted) shows the sign-in form; POST checks it against BOOPITER_TOKEN and, on match, stamps the session so _check_auth lets every other route through. The other way in is a `?token=` query param on any URL -- what the server prints at startup -- this form is the fallback for typing the token in by hand.
+
+- `@rt def run_code_poll(id, poll_n)`
+    Poll a running code cell's execution. While still running, returns just the small output div (re-triggering itself, with an escalating delay -- see _POLL_SCHEDULE) so the code block above it never flickers. Once done, replaces the whole cell out-of-band -- the primary target (#run-out-N) is about to be destroyed along with it, so the primary response body is empty.
+
+- `def pending_code_cell(c, text, scroll)`
+    Placeholder for a code cell whose execution is still running in the background: a static code view plus a self-polling output area (_run_output_div) that swaps itself out for the real render_cell() once done. `scroll=True` (set only by Run All) tags the cell div so the client scrolls it into view as it starts -- see boopScrollRunAll() in edit.js.
+
+- `def run_code_cell(c, scroll)`
+    Tell one code cell to run: stamp it with the current time, then kick off its streaming background execution. The single shared entry point for the play button, Shift-Enter, and Run All (which passes scroll=True so each cell scrolls into view as it starts). A solo run (scroll=False) cancels any in-flight or leftover Run All, so it can never chain into unrelated cells.
+
+- `def pending_prompt_cell(prompt_id, text, oob_swap)`
+    Placeholder shown while a Prompt's LLM reply streams in the background: a pulsing 'Tricky...' indicator plus whatever text has accumulated so far, shown as plain preformatted text (not markdown-rendered -- mid-stream markdown is often invalid, e.g. an unclosed code fence; only the finished reply gets the full '.marked' treatment). hx-trigger=load polls run_prompt_poll() every 300ms until the reply is complete. `oob_swap`, if given, delivers this placeholder out-of-band (see _oob()) instead of being the response's main swap target.
+
+- `@rt def run_prompt_poll(id)`
+    Poll a streaming Prompt reply -- returns the current partial text while still running (re-triggering itself), or finalizes into the real Assistant cell once done.
+
+- `def add_tool(fn)`
+    Register `fn` as a tool the LLM can call on future Prompt-cell runs. Also usable as a decorator: `@add_tool`.
+
+- `def llm_context(nb, cur_id)`
+    Exactly what a real model would receive: the visible cells up through `cur_id` (default: all), in order, with each code cell's outputs appended (via _output_text) so 'run this, then ask about the result' actually works. The `cur_id` cell itself is always included even if toggled invisible -- it's the question being asked, and dropping it would silently send a context with no prompt at the end.
+
+- `def stub_reply(nb, prompt)`
+    Fake/placeholder LLM reply used when no model is available (lets you still test the GUI).
+
+- `def ensure_models()`
+    Populate nb.models (info dicts, see get_model_list()) plus default picks for both models, tolerating an unreachable local LLM server. Run once at startup; refresh_models() takes over from there, so an Ollama that wasn't running yet when boopiter started is picked up on the next brain-menu hover rather than needing a server restart.
+
+- `def Icon(name, cls, filled)`
+    A heroicons SVG by name (see ICONS), inlined so `stroke='currentColor'` (and, if `filled`, `fill='currentColor'` too) matches the button's text color. Thin wrapper over _svg_icon().
+
+- `def IconBtn(name, title, **kw)`
+    A small ghost-style button showing heroicon `name`, with a hover tooltip of `title`.
+
+- `def cell_toolbar(c)`
+    The row of icon buttons (copy, export toggle, visibility, run, move, delete) shown in a cell's header.
+
+- `def type_dropdown(c)`
+    Click the cell-type word to switch it (code/note/prompt/raw). Scoped to just this cell.
+
+- `def cell_header(c, running)`
+    The top row of a cell: type dropdown, id/timestamp, and the toolbar. `running=True` (used by pending_code_cell() while a background execution is still in flight) adds a pulsing 'Running...' indicator that disappears once the cell finishes, whether it succeeded or errored. flex-wrap lets the toolbar drop to its own line on narrow (mobile) viewports instead of squeezing/overlapping.
+
+- `def cell_body(c)`
+    Note/prompt/assistant render as markdown; raw is bare text. Code cells never reach here -- render_cell() routes them to code_view()/code_editor(). An Assistant cell with call metadata (Cell.details) shows it in a collapsed <details> block above the reply.
+
+- `def render_output_blocks(blocks)`
+    Render each of a code cell's output blocks (see Cell.output / run_code()) to its appropriate FT: an <img> for images, raw markup for HTML/SVG, client-side-rendered markdown for text/markdown (same '.marked' pipeline as note cells), pretty-printed for JSON, and a plain (ANSI-aware) <pre> for stream/error text.
+
+- `def code_view(c)`
+    Static, syntax-highlighted (no live CodeMirror) view of a code cell -- click to load the real editor. Keeping non-focused cells static is what makes theme switches etc. fast on notebooks with many code cells.
+
+- `def code_editor(c)`
+    The live CodeMirror editor for a code cell -- only rendered for the cell currently being edited. Shift/Ctrl/Cmd+Enter or the play button runs. c.source never contains the '#| export' pragma -- see Cell.export / the bookmark toggle in cell_toolbar.
+
+- `def render_cell(c, oob)`
+    Every cell type renders statically and opens its editor on click; only the actively-edited cell gets a live widget (CodeMirror for code, a plain textarea otherwise). `oob` is forwarded to `_cell_outer` -- see there.
+
+- `def render_cell_edit(c)`
+    Inline editor. Code cells use CodeMirror (Python highlight, no wrap); notes/raw use a textarea. Shift/Ctrl/Cmd+Enter saves.
+
+- `def render_nb()`
+    Render every cell in the notebook, in order, inside the #notebook container div.
+
+- `def composer(draft, oob)`
+    The bottom-of-page input bar: type tabs, a source textarea, and a Boop (submit) button.
+
+- `def render_app(draft)`
+    The whole notebook view: all cells plus the composer, wrapped in one container div.
+
+- `def theme_swap()`
+    DaisyUI sun/moon swap; drives boopApplyTheme (default dark).
+
+- `def fname_display()`
+    The clickable filename shown in the top bar; click to rename.
+
+- `@rt def rename_form()`
+    Swap the filename display for a text input, focused and pre-selected, to rename the notebook.
+
+- `def brain_menu(icon_cls)`
+    Hover menu (styled like tools_menu) for picking the Standard and Reasoning models, SolveIt-style -- the Reasoning picker only lists models advertising Ollama's 'thinking' capability (see get_ollama_list()/ensure_models()), with an L/M/H effort control alongside it (passed through as Chat(...)(think=...) -- see stream_llm_reply()). The brain icon itself doubles as a toggle: click it to switch whether the reasoning or standard model actually answers Prompt cells (nb.use_reasoning/active_model()) -- its SVG strokes turn cyan (matching the 'Tricky...' streaming indicator's color, our existing 'this is thinking' cue) while on. Re-renders itself wholesale on toggle (hx_target=self) since the button's own color has to change along with the menu.
+
+- `@rt def set_standard_model(model)`
+    Change the Standard-model pick in the brain menu, then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently off -- see nb.active_model().
+
+- `@rt def set_reasoning_model(model)`
+    Change the Reasoning-model pick in the brain menu (restricted there to 'thinking'-capable models), then re-render the menu so the new pick's checkmark shows (see _model_select). Only affects Prompt answers directly if the reasoning toggle is currently on -- see nb.active_model().
+
+- `@rt def toggle_reasoning()`
+    The brain-icon click: flip whether the reasoning or standard model answers Prompt cells. Returns the whole re-rendered brain_menu(), since the button itself needs to pick up its new highlighted state.
+
+- `@rt def refresh_models()`
+    Re-list the available models and re-render the brain menu if anything actually changed -- wired to mouseenter on the menu itself (see brain_menu()), so starting Ollama *after* boopiter no longer means restarting the server to see its models; hovering the brain icon is enough. Returns 204 No Content whenever nothing changed, which tells htmx to swap nothing at all: re-rendering an open dropdown on every hover would make the menu visibly flicker, and re-rendering it while the pointer is inside it risks disturbing the CSS :hover state keeping it open. Cheap enough to run on hover -- ~8ms for the /api/tags listing, with the expensive per-model capability probes served from cache (see _ollama_caps) -- and it runs alongside the CSS-driven dropdown rather than gating it, so the menu opens instantly either way. An unreachable Ollama does NOT clear the list (that's what strict=True distinguishes: 'Ollama is down' vs 'Ollama has no models'); it flips nb.ollama_ok so the existing entries render greyed and unclickable, keeping your current pick intact through a restart or a network hiccup. Picks are otherwise repaired, not reset (see _default_picks): a model that has genuinely vanished gets replaced, one you chose is left alone.
+
+- `@rt def set_keep_alive(minutes)`
+    Persist a new keep-alive from the spinner. Clamped at -1, the lowest value Ollama gives a distinct meaning: any negative keep_alive means 'keep this model loaded indefinitely', so -2 and -1 do the same thing and there's no reason to let the box go lower. Takes effect on the next model call; nothing to re-render, hence hx-swap=none.
+
+- `def share_menu(icon_cls)`
+    The share button: a hover menu (same idiom as tools_menu/brain_menu) offering Public or Unlisted, rather than a plain button. Both publish the same page to the same URL; the choice only decides whether the site's index links to it, and re-sharing with the other choice flips that -- so this is a state toggle, not a one-way door. A hover menu rather than a modal or a native <select>, because a real select renders its options as OS chrome outside the page and collapses the popup the moment the pointer moves onto them (see _model_select).
+
+- `def share_panel()`
+    The share notice: progress while rendering and publishing, then the published URL with a button to copy it. Persistent -- it stays until dismissed, because its whole job is to leave the link on screen long enough to paste somewhere.
+
+- `@rt def share_nb(vis)`
+    Share the current notebook, listed on the boops index or not (see share_menu). Saves it to disk first -- the render reads the file, and the published page should match what's on screen -- then publishes on a background thread, since a Quarto render plus a push takes far too long to hold an HTTP response open. Returns the notice immediately so the click visibly does something; it polls itself from there.
+
+- `@rt def share_poll()`
+    Re-render the share notice, but only when its state has actually changed -- otherwise 204 No Content, which tells htmx to swap nothing. With the notice polling on a repeating trigger, that means the element is left completely untouched between state changes, instead of being rebuilt every couple of seconds: rebuilding restarted the spinner and made the whole notice blink.
+
+- `@rt def share_dismiss()`
+    Close the share notice, emptying its slot. Doesn't cancel anything -- an in-flight publish finishes regardless; this only stops showing it.
+
+- `@rt def set_num_ctx(n)`
+    Pick a context window from the brain menu. Ignores anything not in NUM_CTX_CHOICES -- the value goes straight into an Ollama request, and there's no reason for this route to accept arbitrary sizes. Takes effect on the next model call; Ollama reloads the model whenever the requested window differs from the loaded one, which is also when the RAM actually changes.
+
+- `@rt def set_reasoning_effort(effort)`
+    Set the L/M/H reasoning-effort radio in the brain menu -- only meaningful while the reasoning model is in use (see nb.reasoning_effort/stream_llm_reply).
+
+- `def file_menu()`
+    Hamburger dropdown: New / Open (file browser) / Save / Download / Restart Server.
+
+- `def context_menu()`
+    The same New/Open/Save/Download/Restart Server menu as file_menu(), but shown wherever you right-click anywhere on the page (see boopContextMenu in theme.js), for people who reach for a right-click before the hamburger or the 's' hotkey.
+
+- `def file_browser_modal()`
+    The (initially empty/hidden) dialog that hosts the file-browser listing, opened by file_menu()'s Open item.
+
+- `def help_modal()`
+    Keyboard-shortcuts cheat sheet, opened by the '?' button in the top bar. Same modal/backdrop pattern as file_browser_modal().
+
+- `def tools_menu(icon_cls)`
+    Wrench-icon 'Tools' menu: hover to see checkboxes toggling which tool sources (see _TOOL_SOURCE_LABELS/nb.tool_selection) get offered to the LLM on Prompt-cell runs -- see get_tool_list(). DaisyUI's dropdown-hover opens/closes purely via CSS on mouseenter/mouseleave, so no close button is needed.
+
+- `@rt def plugin_panel_poll(name)`
+    Poll target for _plugin_panel -- just re-renders the same self-polling wrapper, which is what keeps the sparklines visibly scrolling while a plugin's panel is open.
+
+- `def top_bar()`
+    The whole navbar: file menu + logo + filename on the left, model pickers + kernel/theme controls on the right.
+
+- `@rt('/_boopiter_ping') def boopiter_ping()`
+    Identity check so `boopiter launch` can tell a live boopiter instance apart from something else on the port.
+
+- `@rt('/logo.png') def logo_png()`
+    Serve the boopiter logo, used both as favicon and in the top bar.
+
+- `@rt def paste_image(data)`
+    Receive a pasted clipboard image as a base64 data URL (see the paste handler in static/edit.js), save it under _IMAGES_DIR with a random collision-proof name, and return the markdown to insert at the caret. The markdown points at the /boopimg/ serving route (below), not the filesystem path -- the browser needs a URL it can actually fetch for the image to render in the note's preview, and the same string is what rides along in Cell.source to the LLM.
+
+- `@rt('/boopimg/{fname}') def boopimg(fname)`
+    Serve a previously pasted image from _IMAGES_DIR. Names are generated server-side at paste time (token_hex + a short extension), so a strict fullmatch on that shape is cheap and closes path traversal without any path canonicalization.
+
+- `@rt('/tailwind.css') def tailwind_css()`
+    Serve the precompiled Tailwind CSS built by _build_tailwind() at launch.
+
+- `@rt def index()`
+    The full page: title, top bar, the notebook+composer, and the save-toast slot.
+
+- `@rt def save_now()`
+    Save the notebook to disk and show a toast confirming success (or failure).
+
+- `@rt def browse(path)`
+    Jupyter-tree-style directory listing for the file-browser modal, rooted at BROWSE_ROOT.
+
+- `@rt def new_notebook()`
+    Discard the current notebook and start a blank one. Redirects to / afterward -- same reasoning as open_file().
+
+- `@rt def restart_server()`
+    nbdev-export the notebooks as a real (blocking) subprocess -- so we get a genuine exit code instead of guessing a delay -- then clear __pycache__ (WSL/Windows-mounted filesystems can have coarse mtime resolution, which can trick Python into serving stale cached bytecode right after a fast save-then-restart) and exec a fresh copy of this process (same PID, same port). Aborts (leaves the current process running) if export fails. Does NOT save the notebook first; Save manually beforehand if you want to keep unsaved edits.
+
+- `@rt def shutdown_server()`
+    Cleanly exit boopiter: send this process SIGTERM, the same graceful-shutdown signal Ctrl-C sends, which uvicorn catches to drain in-flight requests and exit 0. Does NOT save the notebook first -- Save manually beforehand if you want to keep unsaved edits.
+
+- `@rt def download()`
+    Save the notebook, then send it to the browser as a file download.
+
+- `@rt def rename(name)`
+    Rename and persist the notebook to `{new_name}.ipynb` in the server's cwd.
+
+- `@rt def restart_kernel()`
+    Reset the shared IPython shell's namespace, clearing all user-defined variables/functions, then re-pushing nb/add_tool/the current tool selection -- _shell.reset() wipes those along with everything else.
+
+- `@rt def run_all()`
+    Run every code cell top-to-bottom, one at a time -- exactly like clicking play on each in turn. Each cell stamps its own timestamp, streams its own output, and scrolls into view as it starts; the sequence stops at the first cell that errors (see run_code_poll's chaining). Prompt/Note/Raw/Assistant cells are skipped.
+
+- `@rt def interrupt_kernel()`
+    Best-effort interrupt: inject a KeyboardInterrupt into whichever background thread(s) are currently running -- a code cell (_run_state) and/or a streaming Prompt reply (_prompt_state), since those are independent slots and could both be active. Uses CPython's PyThreadState_SetAsyncExc, the same low-level trick real kernels use for SIGINT-based interrupts. It fires at the interrupted thread's next bytecode boundary, so it reliably breaks ordinary Python loops (e.g. a tqdm-wrapped for-loop, or the token-by-token loop in _run_prompt_bg) but can't preempt a single blocking C call already in flight.
+
+- `@rt def toggle_tool_source(key)`
+    Toggle one entry in nb.tool_selection (the wrench-icon Tools menu -- see top_bar()). The checkbox already flips itself natively in the browser; this just keeps the server-side selection in sync, so no DOM update is needed in response.
+
+- `@rt def set_type(t)`
+    Change the composer's current cell type (what a new cell becomes when you hit Boop).
+
+- `def add_cell(t, source)`
+    Create a cell of type `t`: run it if code, just create it if prompt (its Assistant reply streams in asynchronously -- see _start_prompt_run/pending_prompt_cell). Returns the new cell(s).
+
+- `@rt def submit_cell(source)`
+    Append only the new cell(s) to #notebook and reset the composer out-of-band, so untouched cells' editors are never re-created. A just-submitted Prompt gets a 'Tricky...' placeholder that streams its own reply.
+
+- `@rt def split_cell(id, pos, source)`
+    Split an existing cell at caret position `pos`: it keeps the text before the cursor; a new cell of the same type (and, for code, the same export flag) is inserted right after it with the text after the cursor. `source` is the editor's live buffer, sent along by boopSplitCell() because `pos` was measured against *it*, not against the server's last-saved copy -- splitting a cell you'd typed into but not yet saved used to slice the stale copy at an offset that indexed the new one. Neither half is (re-)executed, and any existing output is cleared -- it was produced by the *whole* original code, so it doesn't correctly belong to either fragment alone (e.g. a plot statement can end up in either half after the split, stranding old output next to code that didn't produce it). Blank lines right at the split point (e.g. the PEP8 spacer between two functions) are trimmed off the boundary -- otherwise the new cell would start with an ugly-looking leading blank line.
+
+- `@rt def run_cell(id)`
+    Run this cell (Code: kick off background execution and return a placeholder that streams its progress; Prompt: kick off the LLM call and return a placeholder that streams the reply in), so the caller can target just this cell instead of the whole notebook.
+
+- `@rt def toggle_vis(id)`
+    Toggle whether this cell is visible to the LLM (shown/hidden in llm_context). Called via a plain fetch(), not htmx -- boopToggleVis() (edit.js) already updated the eye icon and cell dimming instantly and optimistically on the client; this just persists that same flip server-side, no HTML response needed.
+
+- `@rt def toggle_export(id)`
+    Toggle a code cell's '#| export' flag (the bookmark icon in cell_toolbar). Called via a plain fetch(), not htmx -- boopToggleExport() (edit.js) already updated the icon's look instantly and optimistically on the client; this just persists that same flip server-side, no HTML response needed.
+
+- `@rt def del_cell(id)`
+    Delete this cell (or its Prompt+Assistant pair). Removes just the affected DOM node(s) out-of-band instead of re-rendering the whole notebook.
+
+- `@rt def move_cell(id, delta)`
+    Move this cell (or its Prompt+Assistant pair) up (delta=-1) or down (delta=1). Rather than re-rendering the whole notebook, this deletes the moved block's DOM node(s) out-of-band and reinserts them next to whichever cell/pair they swapped with -- the rest of the notebook's DOM (and the page's scroll position) is never touched.
+
+- `@rt def select(id)`
+    Select this cell (highlights it and anchors j/k navigation). Updates just the newly- and previously-selected cells, not the whole notebook.
+
+- `@rt def select_delta(delta)`
+    Move the selection up (delta=-1) or down (delta=1) -- the j/k hotkeys. Triggered by a global hotkey (not a specific cell's button), so the response carries out-of-band updates for whichever cells actually changed rather than a full re-render.
+
+- `@rt def insert(where)`
+    Insert a new blank cell above or below the current selection -- the a/b hotkeys. The new cell's type matches the selected cell's own type (falling back to the composer's current type if nothing's selected, or if the selection is an Assistant cell, which isn't directly authorable). Inserts the new cell out-of-band next to its anchor, and refreshes the previously-selected cell (to drop its highlight ring) rather than re-rendering the whole notebook.
+
+- `@rt def pull_code_blocks()`
+    The 'w' hotkey: copy every fenced code block out of the selected Assistant reply (or its paired Prompt) into new Code cells directly below it, in order -- a low-friction way to try running code an LLM suggested without retyping it. No-op if nothing's selected or there's no Assistant reply with code fences.
+
+- `@rt def del_selected()`
+    Delete the currently-selected cell (or its Prompt+Assistant pair) -- the d-d hotkey.
+
+- `@rt def cut_selected()`
+    Cut the currently-selected cell (or its pair) to the clipboard -- the x hotkey.
+
+- `@rt def copy_selected()`
+    Copy the currently-selected cell (or its pair) to the clipboard -- the c hotkey.
+
+- `@rt def paste_selected()`
+    Paste the clipboard after the currently-selected cell -- the v hotkey. Inserts the pasted cell(s) out-of-band, right after their anchor (or at the end, if nothing was selected), instead of re-rendering the whole notebook.
+
+- `@rt def settype_selected(t)`
+    Change the currently-selected cell's type -- the m/y/r hotkeys.
+
+- `@rt def set_ctype(id, t)`
+    Change one cell's type in place; returns just that cell so the rest of the notebook is untouched.
+
+- `@rt def edit_cell(id)`
+    Switch this cell into its live editor (CodeMirror for code, a plain textarea otherwise).
+
+- `@rt def view_cell(id)`
+    Switch this cell back to its static (non-editing) view -- used by the Cancel button and the Escape hotkey (see boopCancelEdit() in edit.js). Also clears nb.selected if it's this cell -- otherwise a code cell (whose editor is shown exactly while c.id == nb.selected, not via a separate edit flag like note/prompt/raw) would just redraw right back into edit mode.
+
+- `@rt def save_cell(id, source)`
+    Commit an edited cell's source (running it if it's code, or re-prompting the LLM if it's a prompt). Targets just this cell (and, for prompts, the paired Assistant cell) rather than the whole notebook, so editing a cell deep in a long notebook doesn't blow away scroll position.
+
+- `@rt def sync_cell(id, source)`
+    Update a cell's source WITHOUT executing it -- used by Save to flush any editor content that was never explicitly run (Shift+Enter), matching Jupyter's WYSIWYG save behavior.
+
+## boopiter.core
+
+> Server startup: bring the boopiter web app up on a port (or cleanly relaunch it), refusing to stomp on a port held by something that isn't boopiter. Precompiles Tailwind once, then starts the server; `launch` is the entry point the CLI and notebook both call.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/core.html.md
+
+- `@call_parse def launch(nbfile, port, no_auth)`
+    Launch (or relaunch) the boopiter server; refuses to touch a port held by something that isn't boopiter
+
+## boopiter.docsprocs
+
+> A docs-build notebook processor that color-codes cells by boopiter type, so the rendered site echoes the app's colored left bars.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/docsprocs.html.md
+
+- `def color_cells(cell)`
+    nbdev docs processor: wrap a markdown/raw cell's source in a Quarto fenced div classed by its boopiter cell type, so styles.css can draw boopiter's colored left bar (green note / red prompt / orange raw). Code cells carry `.cell-code` and are colored via CSS; the page-title (H1) cell is left alone.
+
+- `def share_slug(path)`
+    Six hex chars identifying a notebook by machine and location: sha256 of hostname + its canonical path. Deterministic, so re-sharing the same file overwrites the same page and a link you've already sent stays current -- that's the whole point of not using a random suffix. Keyed on more than the basename because 'example.ipynb' in two checkouts, or on two machines, are different documents that would otherwise fight over one URL. realpath (not abspath) so two symlinked routes to one file still collapse to a single page, and a NUL separator so host 'a' + path 'b/c' can't collide with host 'a/b' + path 'c'.
+
+- `def share_name(path)`
+    The published page's directory name for a notebook: '<basename>_<slug>' (see share_slug).
+
+- `def share_notebook(nb_path, listed, images_dir)`
+    Render `nb_path` into the share site and publish it, returning the public URL. `listed` puts it on the site's index; unlisted pages are still rendered and reachable by URL, just not indexed -- and re-sharing with the other choice flips that, since the state lives in a file that gets rewritten. Overwrites in place: the directory is named from the notebook's identity (see share_slug), so a correction updates the page a recipient already has the link to. Renders locally and pushes only the built site to the gh-pages branch, which is why notebook sources never leave this machine. The push is ours rather than `quarto publish gh-pages` because that command clears the branch before copying its render in, which deletes every page published from a different machine; see _publish_additive. The index is not published from here at all: it is rebuilt by the build-index workflow from every page on the branch, which is the only vantage point that sees shares from every machine -- so the site reads the same no matter which machine published last, and publishing only ever adds. Returns as soon as the push lands; GitHub Pages then takes roughly a minute to rebuild.
+
+## boopiter.kernel
+
+> The code-execution engine: a single shared IPython shell, plus the primitives that run a code cell's source and turn its stdout/stderr/rich-display output into an ordered list of output blocks -- both synchronously (`run_code`) and streamed from a background thread (`_run_code_bg` + `_RunState`/`_TeeStream`). Deliberately stateless about the notebook: no `nb`, no `_run_state` global, no rendering. `cells.py` owns those and drives these primitives.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/kernel.html.md
+
+- `def run_code(src)`
+    Execute `src` in the shared shell; return an ordered list of output blocks (each a dict with 'type' -- stream/error/display -- and, for display blocks, a 'mime' type). See Cell.output. Routes stdout/stderr through _StdoutRouter (same pattern as _run_code_bg) rather than IPython's own capture_output(stdout=True), whose internal swap is a raw global reassignment -- letting this call and a concurrent _run_code_bg (different threads) safely capture their own output at the same time instead of one clobbering the other's capture window.
+
+## boopiter.llms
+
+> Generic LLM-calling utilities (models, prompting, tool schemas) -- deliberately kept independent of boopiter's own Notebook/Cell model, so this module never imports from `cells.py`. `cells.py` imports from here, never the other way around.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/llms.html.md
+
+- `def get_tool_list(selection)`
+    Assemble the list of tool functions to offer an LLM, from whichever sources are selected. Returns actual callables, not names -- pass straight to prompt_llm(tools=...). Per-notebook ad-hoc tools (see add_tool()) are layered on top of this by the caller, not included here.
+
+- `def ollama_loaded()`
+    Names of the models Ollama is currently holding in memory, per its /api/ps endpoint -- not to be confused with get_ollama_list()'s /api/tags, which lists every model on disk whether loaded or not. Returns [] rather than raising if Ollama is unreachable, so callers can treat 'no server' and 'nothing loaded' the same way.
+
+- `def unload_ollama_model(name)`
+    Evict one model from Ollama's memory, given its bare name ('qwen3:14b' -- NOT the 'ollama/'-prefixed id used everywhere else, see get_ollama_list()). Done over HTTP, as a generate request with keep_alive=0 (Ollama's documented way to drop a model immediately), rather than by shelling out to `ollama stop`: the CLI has to be on the *server process's* PATH -- which it often isn't when boopiter is launched from a desktop launcher or systemd unit rather than a login shell -- and it always talks to localhost, whereas this honours OLLAMA_URL like the rest of this module. Returns whether it worked, and warns (rather than failing silently) if not, since a silent no-op here looks exactly like a memory leak.
+
+- `def sync_ollama_loaded(keep)`
+    Enforce the invariant that *only* the models in `keep` stay resident in Ollama: unload every currently-loaded model that isn't one of them. Returns the names actually unloaded. `keep` accepts bare model names or 'ollama/'-prefixed ids interchangeably, and ignores both None and non-Ollama ids like 'deaddrop/...', so a caller can pass nb.standard_model/nb.reasoning_model straight through. Sweeping the live /api/ps list -- instead of remembering which model we last switched away from -- is the point: it also clears models left resident by a previous boopiter process, by another client of the same Ollama server, or by an earlier unload that quietly failed. It's idempotent, so calling it on every model-menu change costs one cheap GET when there's nothing to do.
+
+- `def get_ollama_list(strict)`
+    Get info on every locally-available Ollama model: the raw /api/tags entry (name, details incl. parameter_size/family) plus an added 'id' key ('ollama/<model>', the string used elsewhere as the model identifier -- see nb.model) and a 'capabilities' list (e.g. 'vision'/'tools'/'thinking'). Capabilities are NOT in /api/tags -- only the per-model /api/show endpoint reports them (see _ollama_caps, which caches them and is why calling this repeatedly is cheap). Those probes are independent per model and each is almost entirely network wait, so cache misses are fetched on a small thread pool rather than in series -- with a cold cache that turns N sequential round trips into roughly one. Returns [] and warns if Ollama is unavailable -- unless `strict`, which raises instead, so a caller that already has a good listing (refresh_models(), re-checking on every brain-menu hover) can tell 'Ollama is down' apart from 'Ollama has no models' and keep showing what it had rather than blanking the menu on a transient hiccup. A model whose individual capability probe fails just gets an empty capability list, not a failed listing.
+
+- `def get_model_list(strict)`
+    Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources. Live dead-drop sessions (see _deaddrop_sessions) are listed as models too, one 'deaddrop/<session-id>' entry each: selecting one in the brain-menu dropdown is what binds this notebook's Prompt cells to that session's inbox/outbox. Modelling the binding as a model choice -- rather than as a global set once per process -- means it's visible in the UI, saved with the notebook, and per-notebook, so several notebooks on different topics can each talk to their own session without crossing wires, and a restart can't silently reroute one of them. 'deaddrop/claude' remains the original single-file prompts/ + responses/ route.
+
+- `def tools_system_prompt(tools)`
+    Build a system-prompt block describing `tools` as plain Python functions already available in the model's execution environment -- NOT passed as native API tool schemas. This sidesteps a real reliability problem found via testing: Ollama/Qwen's chat template wraps any non-empty `tools=` into a `<tools>` special-token block that biases even capable local models into reflexive, often-wrong tool calls, regardless of tool_choice or how carefully the system prompt says 'only if needed' (both were tried and didn't help). Routing tool use through the model's own code-writing judgment instead -- which local models are much more reliably good at -- fixed it in practice. Same approach dialoghelper/pyskills use for SolveIt (not a dependency here, just the inspiration). Returns '' if `tools` is empty, so no system prompt is added at all when there's nothing to describe.
+
+- `def prompt_llm(context, model, tools, think, keep_alive_min, num_ctx)`
+    Send a prompt to the LLM; returns (content, details_html) -- the reply text itself, and a separate collapsible <details> block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. `tools`, if given, are described via tools_system_prompt() (code-callable, not native tool-calling) -- see there for why. `think`, if given ('l'/'m'/'h'), is lisette's own reasoning-effort control -- passed straight through to litellm, which maps it to Ollama's 'think' request field; only meaningful for a model that actually supports thinking (see the brain-icon reasoning-model picker).
+
+- `def stream_llm_reply(context, model, tools, think, images, keep_alive_min, num_ctx)`
+    Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. `images` is an optional list of raw image bytes to send alongside the context -- pass them only for models that advertise the vision capability (the caller checks; see cells.py's _start_prompt_run), as non-vision models error or ignore them. They ride as extra message parts via lisette's mk_msg (bytes -> base64 data URL), with the context text last. The dead-drop route ignores them for now -- file-based image handoff is its own upcoming feature. Yields ('delta', text) chunks as they arrive, then a final ('final', content, details_html) tuple once the response completes. Callers (e.g. cells.py's _run_prompt_bg) drive this into their own background-thread/UI state -- that part isn't LLM-specific, so it stays out of this module. `think` ('l'/'m'/'h' or None) -- see prompt_llm(). A `model` starting with 'deaddrop/' is routed through _deaddrop_stream_reply() instead of a real API call -- everything else about this function's contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered.
+
+## boopiter.notebook
+
+> The in-memory notebook model: a typed `Cell`, the `Notebook` that holds a stack of them (with selection, clipboard, and app-level UI state), and the single running `nb` instance. Pure data -- no rendering, no HTTP, no kernel. `cells.py` (rendering/routes) and `serialize.py` (the .ipynb boundary) both build on this; it depends on nothing of theirs.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/notebook.html.md
+
+- `class Cell`
+    One notebook cell: its type, source text, any output, and a few UI/export-related flags.
+
+    - `def __init__(self, id, ctype, source, output, visible, model, nb_id, export, details)`
+        Create a cell with the given type, source text, and optional output/visibility/model/id/export state.
+
+    - `@property def source`
+        The cell's text, always stored with plain `\n` line endings -- see the setter for why that matters.
+
+
+- `class Notebook`
+    The whole in-memory notebook: its cells, selection, clipboard, and app-level UI state.
+
+    - `def __init__(self)`
+        Start a fresh, empty, untitled notebook.
+
+    - `def active_model(self)`
+        The model 'id' actually in play for Prompt-cell answers: reasoning_model if the brain-icon toggle is on and one's selected, else standard_model.
+
+    - `def insert_at(self, pos, ctype, source, output, visible, model, nb_id, export, details)`
+        Create a new cell of type `ctype` and insert it at list index `pos`.
+
+    - `def add(self, ctype, source, output, visible, model, nb_id, export, details)`
+        Create a new cell of type `ctype` and append it to the end of the notebook.
+
+    - `def index(self, id)`
+        The list index of the cell with this `id`, or None if it's not present.
+
+    - `def get(self, id)`
+        The cell with this `id`, or None if it's not present.
+
+    - `def sel_index(self)`
+        The list index of the currently-selected cell, or None if nothing is selected.
+
+    - `def pair_range(self, id)`
+        Indices (start,end) spanning the Prompt+Assistant pair containing `id`, or just (i,i) for a lone cell.
+
+    - `def remove(self, id)`
+        Delete the cell, or its whole Prompt+Assistant pair if it's part of one.
+
+    - `def move(self, id, delta)`
+        Move the cell (or its Prompt+Assistant pair) up/down as a block, swapping with whatever cell/pair is adjacent.
+
+    - `def copy_range(self, id)`
+        Copy the cell (or its pair) into the clipboard, without removing it.
+
+    - `def cut_range(self, id)`
+        Copy the cell (or its pair) into the clipboard, then remove it.
+
+    - `def paste_after(self, id)`
+        Paste the clipboard as new cells (fresh ids) right after `id`'s pair, or at the end if id is None.
+
+    - `def reset(self)`
+        Discard all cells and start over, as if boopiter had just launched fresh.
+
+
+## boopiter.plugins
+
+> A small plugin protocol for the top bar. Each plugin supplies an icon + name, an optional always-on background task, and a `render()` that builds the popup shown when its icon is activated (hover). Deliberately a **leaf module** -- it imports only external libs, never `cells.py`, so `cells.py` can `from .plugins import *` without a circular import (same one-directional rule as `llms.py`).
+> 
+> Docs: https://drscotthawley.github.io/boopiter/plugins.html.md
+
+- `class Plugin`
+    Base class for a top-bar plugin. Subclass it, set `name`/`icon`/`trigger` (or in __init__), and override `on_start`/`render` as needed; decorate the subclass with @register to add it to PLUGINS. `icon` is ICONS-style path data (plain 'd' strings and/or (d, scale) pairs) so cells.py renders it through the exact same SVG machinery as its built-in icons. `trigger` is 'hover' (the only kind wired up so far) or 'click'.
+
+    - `def on_start(self)`
+        Optional lifecycle hook, called once at server startup (see start_plugins()). Long-running background work -- e.g. a sampling thread -- belongs here, NOT in __init__, so it only runs on a real server boot and never during import/tests.
+
+    - `def render(self)`
+        Build the popup shown when this plugin is activated. Called at page-build time; reads whatever state on_start()'s background task has accumulated.
+
+
+- `def register(cls)`
+    Class decorator: instantiate `cls` and append it to PLUGINS. Registration = importing this module. Returns `cls` unchanged.
+
+- `def start_plugins()`
+    Call every registered plugin's on_start() once. Wired into cells.py's @app.on_event('startup') so background samplers spawn on real boot only.
+
+- `@register class SystemMonitor`
+    First plugin: continuously logs CPU%, system-RAM%, GPU-util%, and VRAM% into ring buffers in the background (whether or not its panel is open), and plots the accumulated history as inline-SVG sparklines when hovered. GPU comes from nvidia-smi (_gpu_sample) on non-Mac hosts or the IOKit registry (_gpu_sample_darwin) on macOS; VRAM is nvidia-only -- Apple Silicon's unified memory has no separate pool to report. Rows just go empty/'--' if unavailable, no separate placeholder needed.
+
+    - `def __init__(self, maxlen, interval)`
+        maxlen samples at `interval` seconds ~= history length (300 x 2s ~= 10 min). Only sets up state; the sampling thread starts in on_start().
+
+    - `def on_start(self)`
+        Spawn the (single, idempotent) daemon sampling thread.
+
+    - `def render(self)`
+
+## boopiter.serialize
+
+> The .ipynb file boundary: serialize the in-memory `nb` (see notebook.py) to a real Jupyter notebook and load one back. A Prompt cell and its Assistant reply are stored solveit-style as a single markdown cell -- the prompt, a `##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_... -->` line, then the reply -- so their structure lives in the cell *source* (which `nbdev-clean` leaves untouched) rather than in metadata (which it strips). Kept apart from the data model (notebook.py) and the rendering/routes (cells.py) so file-format concerns live in one place.
+> 
+> Docs: https://drscotthawley.github.io/boopiter/serialize.html.md
+
+- `def save_notebook(path)`
+    Serialize `nb.cells` to a real Jupyter notebook file (`{nb.name}.ipynb` in the cwd by default). A Prompt cell and the Assistant reply that follows it are stored solveit-style as a SINGLE markdown cell -- prompt, a `##### 🤖Reply🤖<!-- SOLVEIT_SEPARATOR_... -->` line, the assistant's `<details>` block, then the reply -- so the prompt/reply structure lives in the cell source (which nbdev-clean leaves alone) rather than in strippable metadata. note/code/raw stay plain native cells; code cells keep their `#| export` pragma and outputs. Cell ids (and the separator's reply-id hex) are preserved across saves so unchanged cells don't churn git diffs. A `solveit_ai:true` flag is also stamped on prompt/reply cells for solveit's benefit -- boopiter itself relies only on the separator.
+
+- `def load_notebook(path)`
+    Load a Jupyter notebook file into `nb`, replacing its current contents -- the inverse of save_notebook(). A markdown cell containing the `SOLVEIT_SEPARATOR` splits back into a Prompt cell plus its Assistant reply (with the `<details>` block re-extracted into `details`); other markdown is a note; code cells get their leading `#| export` detected and stripped. For notebooks saved by older boopiter it falls back to reading legacy `metadata.boopiter` (ctype/visible/details); for plain non-boopiter notebooks it falls back to nbformat cell types.
+</doc></optional></project>

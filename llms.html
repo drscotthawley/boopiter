@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.18">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="description" content="Generic LLM-calling utilities (models, prompting, tool schemas) – deliberately kept independent of boopiter’s own Notebook/Cell model, so this module never imports from cells.py. cells.py imports from here, never the other way around.">
+
+<title>llms – boopiter</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-64a204ab8560d761af7679ceaba22944.css" rel="stylesheet" class="quarto-color-scheme" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-53dc85963c67a221f6f2030af840abbe.css" rel="stylesheet" class="quarto-color-scheme quarto-color-alternate" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-63180c5dda01c187c33bc16bc49fe53e.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-dark-6b5e7143438591d42b0b787739ddee84.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme quarto-color-alternate" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+<link rel="stylesheet" href="styles.css">
+<meta property="og:title" content="llms – boopiter">
+<meta property="og:description" content="Generic LLM-calling utilities (models, prompting, tool schemas) – deliberately kept independent of boopiter’s own Notebook/Cell model, so this module never imports from cells.py. cells.py imports from here, never the other way around.">
+<meta property="og:site_name" content="boopiter">
+<meta name="twitter:title" content="llms – boopiter">
+<meta name="twitter:description" content="Generic LLM-calling utilities (models, prompting, tool schemas) – deliberately kept independent of boopiter’s own Notebook/Cell model, so this module never imports from cells.py. cells.py imports from here, never the other way around.">
+<meta name="twitter:card" content="summary">
+</head>
+
+<body class="nav-sidebar floating nav-fixed quarto-dark"><script id="quarto-html-before-body" type="application/javascript">
+    const toggleBodyColorMode = (bsSheetEl) => {
+      const mode = bsSheetEl.getAttribute("data-mode");
+      const bodyEl = window.document.querySelector("body");
+      if (mode === "dark") {
+        bodyEl.classList.add("quarto-dark");
+        bodyEl.classList.remove("quarto-light");
+      } else {
+        bodyEl.classList.add("quarto-light");
+        bodyEl.classList.remove("quarto-dark");
+      }
+    }
+    const toggleBodyColorPrimary = () => {
+      const bsSheetEl = window.document.querySelector("link#quarto-bootstrap:not([rel=disabled-stylesheet])");
+      if (bsSheetEl) {
+        toggleBodyColorMode(bsSheetEl);
+      }
+    }
+    const setColorSchemeToggle = (alternate) => {
+      const toggles = window.document.querySelectorAll('.quarto-color-scheme-toggle');
+      for (let i=0; i < toggles.length; i++) {
+        const toggle = toggles[i];
+        if (toggle) {
+          if (alternate) {
+            toggle.classList.add("alternate");
+          } else {
+            toggle.classList.remove("alternate");
+          }
+        }
+      }
+    };
+    const toggleColorMode = (alternate) => {
+      // Switch the stylesheets
+      const primaryStylesheets = window.document.querySelectorAll('link.quarto-color-scheme:not(.quarto-color-alternate)');
+      const alternateStylesheets = window.document.querySelectorAll('link.quarto-color-scheme.quarto-color-alternate');
+      manageTransitions('#quarto-margin-sidebar .nav-link', false);
+      if (alternate) {
+        // note: dark is layered on light, we don't disable primary!
+        enableStylesheet(alternateStylesheets);
+        for (const sheetNode of alternateStylesheets) {
+          if (sheetNode.id === "quarto-bootstrap") {
+            toggleBodyColorMode(sheetNode);
+          }
+        }
+      } else {
+        disableStylesheet(alternateStylesheets);
+        enableStylesheet(primaryStylesheets)
+        toggleBodyColorPrimary();
+      }
+      manageTransitions('#quarto-margin-sidebar .nav-link', true);
+      // Switch the toggles
+      setColorSchemeToggle(alternate)
+      // Hack to workaround the fact that safari doesn't
+      // properly recolor the scrollbar when toggling (#1455)
+      if (navigator.userAgent.indexOf('Safari') > 0 && navigator.userAgent.indexOf('Chrome') == -1) {
+        manageTransitions("body", false);
+        window.scrollTo(0, 1);
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          manageTransitions("body", true);
+        }, 40);
+      }
+    }
+    const disableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        stylesheet.rel = 'disabled-stylesheet';
+      }
+    }
+    const enableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        if(stylesheet.rel !== 'stylesheet') { // for Chrome, which will still FOUC without this check
+          stylesheet.rel = 'stylesheet';
+        }
+      }
+    }
+    const manageTransitions = (selector, allowTransitions) => {
+      const els = window.document.querySelectorAll(selector);
+      for (let i=0; i < els.length; i++) {
+        const el = els[i];
+        if (allowTransitions) {
+          el.classList.remove('notransition');
+        } else {
+          el.classList.add('notransition');
+        }
+      }
+    }
+    const isFileUrl = () => {
+      return window.location.protocol === 'file:';
+    }
+    const hasAlternateSentinel = () => {
+      let styleSentinel = getColorSchemeSentinel();
+      if (styleSentinel !== null) {
+        return styleSentinel === "alternate";
+      } else {
+        return false;
+      }
+    }
+    const setStyleSentinel = (alternate) => {
+      const value = alternate ? "alternate" : "default";
+      if (!isFileUrl()) {
+        window.localStorage.setItem("quarto-color-scheme", value);
+      } else {
+        localAlternateSentinel = value;
+      }
+    }
+    const getColorSchemeSentinel = () => {
+      if (!isFileUrl()) {
+        const storageValue = window.localStorage.getItem("quarto-color-scheme");
+        return storageValue != null ? storageValue : localAlternateSentinel;
+      } else {
+        return localAlternateSentinel;
+      }
+    }
+    const toggleGiscusIfUsed = (isAlternate, darkModeDefault) => {
+      const baseTheme = document.querySelector('#giscus-base-theme')?.value ?? 'light';
+      const alternateTheme = document.querySelector('#giscus-alt-theme')?.value ?? 'dark';
+      let newTheme = '';
+      if(authorPrefersDark) {
+        newTheme = isAlternate ? baseTheme : alternateTheme;
+      } else {
+        newTheme = isAlternate ? alternateTheme : baseTheme;
+      }
+      const changeGiscusTheme = () => {
+        // From: https://github.com/giscus/giscus/issues/336
+        const sendMessage = (message) => {
+          const iframe = document.querySelector('iframe.giscus-frame');
+          if (!iframe) return;
+          iframe.contentWindow.postMessage({ giscus: message }, 'https://giscus.app');
+        }
+        sendMessage({
+          setConfig: {
+            theme: newTheme
+          }
+        });
+      }
+      const isGiscussLoaded = window.document.querySelector('iframe.giscus-frame') !== null;
+      if (isGiscussLoaded) {
+        changeGiscusTheme();
+      }
+    };
+    const authorPrefersDark = true;
+    const darkModeDefault = authorPrefersDark;
+    let localAlternateSentinel = darkModeDefault ? 'alternate' : 'default';
+    // Dark / light mode switch
+    window.quartoToggleColorScheme = () => {
+      // Read the current dark / light value
+      let toAlternate = !hasAlternateSentinel();
+      toggleColorMode(toAlternate);
+      setStyleSentinel(toAlternate);
+      toggleGiscusIfUsed(toAlternate, darkModeDefault);
+      window.dispatchEvent(new Event('resize'));
+    };
+    // Switch to dark mode if need be
+    if (hasAlternateSentinel()) {
+      toggleColorMode(true);
+    } else {
+      toggleColorMode(false);
+    }
+  </script>
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">boopiter</span>
+    </a>
+  </div>
+        <div class="quarto-navbar-tools tools-end">
+  <a href="" class="quarto-color-scheme-toggle quarto-navigation-tool  px-1" onclick="window.quartoToggleColorScheme(); return false;" title="Toggle dark mode"><i class="bi"></i></a>
+</div>
+          <div id="quarto-search" class="" title="Search"></div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./llms.html">llms</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">boopiter</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./core.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">core</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./llms.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">llms</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./notebook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">notebook</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./kernel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">kernel</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./serialize.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">serialize</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cells.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">cells</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./plugins.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">plugins</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./docsprocs.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">docsprocs</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./example.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Example</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./guide.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">User Guide</span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#tool-selection" id="toc-tool-selection" class="nav-link active" data-scroll-target="#tool-selection">Tool selection</a></li>
+  <li><a href="#listing-available-models" id="toc-listing-available-models" class="nav-link" data-scroll-target="#listing-available-models">Listing available models</a></li>
+  <li><a href="#forcing-streaming-responses" id="toc-forcing-streaming-responses" class="nav-link" data-scroll-target="#forcing-streaming-responses">Forcing streaming responses</a></li>
+  <li><a href="#reply-metadata" id="toc-reply-metadata" class="nav-link" data-scroll-target="#reply-metadata">Reply metadata</a></li>
+  <li><a href="#why-tools-arent-passed-as-native-api-tools" id="toc-why-tools-arent-passed-as-native-api-tools" class="nav-link" data-scroll-target="#why-tools-arent-passed-as-native-api-tools">Why tools aren’t passed as native API <code>tools=</code></a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/drscotthawley/boopiter/issues/new" class="toc-action"><i class="bi bi-github"></i>Report an issue</a></li></ul></div><div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="llms.html.md"><i class="bi bi-file-code"></i>Markdown</a></li></ul></div></nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">llms</h1>
+</div>
+
+<div>
+  <div class="description">
+    Generic LLM-calling utilities (models, prompting, tool schemas) – deliberately kept independent of boopiter’s own Notebook/Cell model, so this module never imports from <code>cells.py</code>. <code>cells.py</code> imports from here, never the other way around.
+  </div>
+</div>
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<div class="boopcell boop-raw">
+
+</div>
+<div class="boopcell boop-note">
+<!-- WARNING: THIS FILE WAS AUTOGENERATED! DO NOT EDIT! -->
+</div>
+<section id="tool-selection" class="level2 boopcell boop-note">
+<h2 class="anchored" data-anchor-id="tool-selection">Tool selection</h2>
+<p>Which tool functions to offer the LLM. <code>_LOCAL_TOOLS</code> / <code>DEFAULT_TOOL_SELECTION</code> define the available sources and the default set; <a href="https://drscotthawley.github.io/boopiter/llms.html#get_tool_list"><code>get_tool_list</code></a> assembles the actual function list from whichever sources are selected.</p>
+</section>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L38" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="get_tool_list" class="level3">
+<h3 class="anchored" data-anchor-id="get_tool_list">get_tool_list</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_tool_list(</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    selection:<span class="bu">dict</span><span class="op">=</span><span class="va">None</span>, <span class="co"># which tool sources to include -- keys 'boopiter'/'slmn-nbtools'/'slmn-misc'/'slmn-remote', bool values (see the wrench-icon Tools menu in the GUI). Defaults to DEFAULT_TOOL_SELECTION if omitted. 'slmn-remote', even when selected, only ever contributes its safe/read-only subset (_SLMN_REMOTE_SAFE) -- remote_launch/remote_status/remote_smoke_test (arbitrary remote command execution over ssh) are never included here, by design, regardless of selection.</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">list</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Assemble the list of tool functions to offer an LLM, from whichever sources are selected. Returns actual callables, not names – pass straight to prompt_llm(tools=…). Per-notebook ad-hoc tools (see add_tool()) are layered on top of this by the caller, not included here.</em></p>
+</section>
+</div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L72" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="sync_ollama_loaded" class="level3">
+<h3 class="anchored" data-anchor-id="sync_ollama_loaded">sync_ollama_loaded</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> sync_ollama_loaded(</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    keep:<span class="bu">list</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">list</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Enforce the invariant that </em>only* the models in <code>keep</code> stay resident in Ollama: unload every currently-loaded model that isn’t one of them. Returns the names actually unloaded. <code>keep</code> accepts bare model names or ‘ollama/’-prefixed ids interchangeably, and ignores both None and non-Ollama ids like ‘deaddrop/…’, so a caller can pass nb.standard_model/nb.reasoning_model straight through. Sweeping the live /api/ps list – instead of remembering which model we last switched away from – is the point: it also clears models left resident by a previous boopiter process, by another client of the same Ollama server, or by an earlier unload that quietly failed. It’s idempotent, so calling it on every model-menu change costs one cheap GET when there’s nothing to do.*</p>
+</section>
+</div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L62" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="unload_ollama_model" class="level3">
+<h3 class="anchored" data-anchor-id="unload_ollama_model">unload_ollama_model</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> unload_ollama_model(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    name:<span class="bu">str</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">bool</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Evict one model from Ollama’s memory, given its bare name (‘qwen3:14b’ – NOT the ‘ollama/’-prefixed id used everywhere else, see get_ollama_list()). Done over HTTP, as a generate request with keep_alive=0 (Ollama’s documented way to drop a model immediately), rather than by shelling out to <code>ollama stop</code>: the CLI has to be on the </em>server process’s* PATH – which it often isn’t when boopiter is launched from a desktop launcher or systemd unit rather than a login shell – and it always talks to localhost, whereas this honours OLLAMA_URL like the rest of this module. Returns whether it worked, and warns (rather than failing silently) if not, since a silent no-op here looks exactly like a memory leak.*</p>
+</section>
+</div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L56" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="ollama_loaded" class="level3">
+<h3 class="anchored" data-anchor-id="ollama_loaded">ollama_loaded</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> ollama_loaded()<span class="op">-&gt;</span><span class="bu">list</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Names of the models Ollama is currently holding in memory, per its /api/ps endpoint – not to be confused with get_ollama_list()‘s /api/tags, which lists every model on disk whether loaded or not. Returns [] rather than raising if Ollama is unreachable, so callers can treat ’no server’ and ‘nothing loaded’ the same way.</em></p>
+</section>
+</div>
+<section id="listing-available-models" class="level2 boopcell boop-note">
+<h2 class="anchored" data-anchor-id="listing-available-models">Listing available models</h2>
+<p><a href="https://drscotthawley.github.io/boopiter/llms.html#get_ollama_list"><code>get_ollama_list</code></a> reads every locally-available Ollama model from <code>/api/tags</code>; <a href="https://drscotthawley.github.io/boopiter/llms.html#get_model_list"><code>get_model_list</code></a> wraps it (and any other sources) into a uniform list of model-info dicts.</p>
+</section>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L90" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="get_ollama_list" class="level3">
+<h3 class="anchored" data-anchor-id="get_ollama_list">get_ollama_list</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_ollama_list(</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    strict:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">list</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>*Get info on every locally-available Ollama model: the raw /api/tags entry (name, details incl.&nbsp;parameter_size/family) plus an added ‘id’ key (‘ollama/<model>’, the string used elsewhere as the model identifier – see nb.model) and a ‘capabilities’ list (e.g.&nbsp;‘vision’/‘tools’/‘thinking’). Capabilities are NOT in /api/tags – only the per-model /api/show endpoint reports them (see _ollama_caps, which caches them and is why calling this repeatedly is cheap). Those probes are independent per model and each is almost entirely network wait, so cache misses are fetched on a small thread pool rather than in series – with a cold cache that turns N sequential round trips into roughly one. Returns [] and warns if Ollama is unavailable – unless <code>strict</code>, which raises instead, so a caller that already has a good listing (refresh_models(), re-checking on every brain-menu hover) can tell ‘Ollama is down’ apart from ‘Ollama has no models’ and keep showing what it had rather than blanking the menu on a transient hiccup. A model whose individual capability probe fails just gets an empty capability list, not a failed listing.*</model></p>
+</section>
+</div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L107" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="get_model_list" class="level3">
+<h3 class="anchored" data-anchor-id="get_model_list">get_model_list</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_model_list(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    strict:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">list</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>*Wrapper routine to get info dicts (see get_ollama_list()) for all available models from all sources. Live dead-drop sessions (see _deaddrop_sessions) are listed as models too, one ‘deaddrop/<session-id>’ entry each: selecting one in the brain-menu dropdown is what binds this notebook’s Prompt cells to that session’s inbox/outbox. Modelling the binding as a model choice – rather than as a global set once per process – means it’s visible in the UI, saved with the notebook, and per-notebook, so several notebooks on different topics can each talk to their own session without crossing wires, and a restart can’t silently reroute one of them. ‘deaddrop/claude’ remains the original single-file prompts/ + responses/ route.*</session-id></p>
+</section>
+</div>
+<div id="146b3e9d" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>get_model_list()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>['ollama/qwen2.5-coder:latest',
+ 'ollama/gemma3:4b',
+ 'ollama/llama3.1:latest',
+ 'ollama/qwen2.5:latest']</code></pre>
+</div>
+</div>
+<section id="forcing-streaming-responses" class="level2 boopcell boop-note">
+<h2 class="anchored" data-anchor-id="forcing-streaming-responses">Forcing streaming responses</h2>
+<p>A monkeypatch (<code>_call</code>, over the saved <code>_orig_chat_call</code>) makes the chat client always yield streamed responses, working around a limitation in the underlying library.</p>
+</section>
+<section id="reply-metadata" class="level2 boopcell boop-note">
+<h2 class="anchored" data-anchor-id="reply-metadata">Reply metadata</h2>
+<p><a href="https://drscotthawley.github.io/boopiter/llms.html#_details_block"><code>_details_block</code></a> builds the collapsible <code>&lt;details&gt;</code> panel of call metadata (model, finish reason, token counts, tool calls); <a href="https://drscotthawley.github.io/boopiter/llms.html#_reply_details_html"><code>_reply_details_html</code></a> fills it in for a real API response. Rendered with escaped FT components, not raw HTML.</p>
+</section>
+<section id="why-tools-arent-passed-as-native-api-tools" class="level3 boopcell boop-note">
+<h3 class="anchored" data-anchor-id="why-tools-arent-passed-as-native-api-tools">Why tools aren’t passed as native API <code>tools=</code></h3>
+<p>Early on, enabling any tool source made local models (tested worst-case: <code>qwen2.5-coder:latest</code>, but reproduced up through <code>qwen3.6:27b</code>) reflexively try to call a tool on <em>every</em> prompt, including plain “write me some code” requests that had nothing to do with any tool – producing garbled, empty, or JSON-as-prose replies instead of a normal answer.</p>
+<p>The root cause: Ollama/Qwen’s chat template wraps any non-empty <code>tools=</code> API parameter into a <code>&lt;tools&gt;...&lt;/tools&gt;</code> special-token block. That structural block biases these models into feeling obligated to fill a <code>&lt;tool_call&gt;</code> slot, regardless of <code>tool_choice</code> (<code>'auto'</code> vs.&nbsp;the default <code>None</code> made no measurable difference) and regardless of a system prompt saying “only use a tool if you actually need one” (that improved <em>presentation</em> – coherent prose vs.&nbsp;raw JSON – but didn’t stop the reflex). Bigger models weren’t immune either, just failed differently (e.g.&nbsp;the tool call landing in <code>reasoning_content</code> while <code>content</code> came back empty).</p>
+<p>The fix, found by reading how SolveIt’s <code>dialoghelper</code>/<code>pyskills</code> solve the same problem: never populate the native <code>tools=</code> parameter. Instead, describe the available functions in the system prompt as plain Python callables already present in the execution namespace (see <a href="https://drscotthawley.github.io/boopiter/llms.html#tools_system_prompt"><code>tools_system_prompt()</code></a> below), and let the model express “I need a tool” by writing an ordinary ``<code>python code block as part of its reply -- the same code-generation skill these models are already reliably good at, rather than their much less reliable native function-calling judgment. [</code>stream_llm_reply()<code>](https://drscotthawley.github.io/boopiter/llms.html#stream_llm_reply) (and [</code>_push_tools()<code>](https://drscotthawley.github.io/boopiter/cells.html#_push_tools) in</code>cells.py`, which keeps those functions live in the shared kernel namespace) implement that pattern end to end.</p>
+</section>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L246" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="stream_llm_reply" class="level3">
+<h3 class="anchored" data-anchor-id="stream_llm_reply">stream_llm_reply</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> stream_llm_reply(</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    context:<span class="bu">str</span>, model:<span class="bu">str</span>, tools:<span class="bu">list</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>, think:<span class="bu">str</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>, images:<span class="bu">list</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    keep_alive_min:<span class="bu">int</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>, num_ctx:<span class="bu">int</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>):</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>*Generator streaming a model reply token-by-token, using the code-callable tool strategy (see tools_system_prompt) instead of native tool-calling. <code>images</code> is an optional list of raw image bytes to send alongside the context – pass them only for models that advertise the vision capability (the caller checks; see cells.py’s _start_prompt_run), as non-vision models error or ignore them. They ride as extra message parts via lisette’s mk_msg (bytes -&gt; base64 data URL), with the context text last. The dead-drop route ignores them for now – file-based image handoff is its own upcoming feature. Yields (‘delta’, text) chunks as they arrive, then a final (‘final’, content, details_html) tuple once the response completes. Callers (e.g.&nbsp;cells.py’s _run_prompt_bg) drive this into their own background-thread/UI state – that part isn’t LLM-specific, so it stays out of this module. <code>think</code> (‘l’/‘m’/‘h’ or None) – see prompt_llm(). A <code>model</code> starting with ‘deaddrop/’ is routed through _deaddrop_stream_reply() instead of a real API call – everything else about this function’s contract (the yielded tuple shapes) is identical either way, so no caller needs to know or care which one answered.*</p>
+</section>
+</div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L188" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="prompt_llm" class="level3">
+<h3 class="anchored" data-anchor-id="prompt_llm">prompt_llm</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> prompt_llm(</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    context:<span class="bu">str</span>, model:<span class="bu">str</span><span class="op">=</span><span class="st">'ollama_chat/qwen2.5-coder:latest'</span>, tools:<span class="bu">list</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>, think:<span class="bu">str</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    keep_alive_min:<span class="bu">int</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span>, num_ctx:<span class="bu">int</span> <span class="op">|</span> <span class="va">None</span><span class="op">=</span><span class="va">None</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">tuple</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+*Send a prompt to the LLM; returns (content, details_html) – the reply text itself, and a separate collapsible
+<details>
+<p>block of call metadata (model/tokens/finish reason/reasoning) meant to be stored apart from the reply (see Cell.details), not mixed into it. <code>tools</code>, if given, are described via tools_system_prompt() (code-callable, not native tool-calling) – see there for why. <code>think</code>, if given (‘l’/‘m’/‘h’), is lisette’s own reasoning-effort control – passed straight through to litellm, which maps it to Ollama’s ‘think’ request field; only meaningful for a model that actually supports thinking (see the brain-icon reasoning-model picker).*</p>
+</details></section></div>
+<div class="prose" data-markdown="1">
+<hr>
+<p><a href="https://github.com/drscotthawley/boopiter/blob/main/boopiter/llms.py#L160" target="_blank" style="float:right; font-size:smaller">source</a></p>
+<section id="tools_system_prompt" class="level3">
+<h3 class="anchored" data-anchor-id="tools_system_prompt">tools_system_prompt</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> tools_system_prompt(</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    tools:<span class="bu">list</span> <span class="op">|</span> <span class="va">None</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">str</span>:</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Build a system-prompt block describing <code>tools</code> as plain Python functions already available in the model’s execution environment – NOT passed as native API tool schemas. This sidesteps a real reliability problem found via testing: Ollama/Qwen’s chat template wraps any non-empty <code>tools=</code> into a <code>&lt;tools&gt;</code> special-token block that biases even capable local models into reflexive, often-wrong tool calls, regardless of tool_choice or how carefully the system prompt says ‘only if needed’ (both were tried and didn’t help). Routing tool use through the model’s own code-writing judgment instead – which local models are much more reliably good at – fixed it in practice. Same approach dialoghelper/pyskills use for SolveIt (not a dependency here, just the inspiration). Returns ’’ if <code>tools</code> is empty, so no system prompt is added at all when there’s nothing to describe.</em></p>
+</section>
+</div>
+<div id="b2fb7624" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span><span class="st">"Today is July 18. Who's one famous person with this birthday?"</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>c <span class="op">=</span> prompt_llm(s) </span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="bu">str</span>(c[<span class="dv">0</span>]))</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> <span class="st">"""</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="st">    Tell me the previous question I asked you, from the previous prompt. </span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="st">    I want to see if you retain state between calls"""</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>c <span class="op">=</span> prompt_llm(s) </span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="bu">str</span>(c[<span class="dv">0</span>]))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>One famous person born on July 18th is Mark Zuckerberg, the co-founder and CEO of Facebook.
+I'm sorry for any confusion, but as an AI language model, I don't have the capability to remember or retain information across separate interactions. Each response is generated independently based on the input provided in each session. If you have a specific question or need assistance with something particular, feel free to ask!</code></pre>
+</div>
+</div>
+
+<section id="tool-use" class="level3 boopcell boop-note">
+<h3 class="anchored" data-anchor-id="tool-use">Tool Use</h3>
+<p>Example tool from lisette docs:</p>
+</section>
+<div id="276eb4c4" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> add_numbers(</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    a: <span class="bu">int</span>,  <span class="co"># First number to add</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    b: <span class="bu">int</span>   <span class="co"># Second number to add  </span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">int</span>:</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">"Add two numbers together"</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> a <span class="op">+</span> b</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="69fae5e1" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>res <span class="op">=</span> prompt_llm(<span class="st">"What's 47 + 23? Use the tool."</span>, tools<span class="op">=</span>[add_numbers])</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(res[<span class="dv">0</span>])</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>The sum of 47 and 23 is 70. I have completed my task as requested. If you need further assistance or have additional questions, feel free to ask!</code></pre>
+</div>
+</div>
+<div id="llmsdemo1" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Confirms get_tool_list() assembles real, callable tools according to a selection dict.</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> boopiter.llms <span class="im">import</span> get_tool_list, DEFAULT_TOOL_SELECTION</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="bu">len</span>(get_tool_list()), <span class="st">"tools with defaults:"</span>, [t.<span class="va">__name__</span> <span class="cf">for</span> t <span class="kw">in</span> get_tool_list()])</span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="bu">len</span>(get_tool_list({<span class="st">'boopiter'</span>: <span class="va">True</span>, <span class="st">'slmn-nbtools'</span>: <span class="va">False</span>, <span class="st">'slmn-misc'</span>: <span class="va">False</span>, <span class="st">'slmn-remote'</span>: <span class="va">True</span>})), <span class="st">"tools with only boopiter+remote"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+
+
+</main></div>
+
+ <!-- /main -->
+<!-- Swap Quarto's built-in dark/light toggle icon (a small sideways switch) for boopiter's
+     own sun/moon SVGs (the exact paths from theme_swap() in boopiter/cells.py). We reuse
+     Quarto's toggle <a> so all the theme-switching + localStorage persistence keeps working;
+     we only replace what it looks like. Quarto adds `.alternate` to the toggle in dark mode,
+     which styles.css uses to show the moon (dark) vs sun (light) -- matching boopiter. -->
+<footer class="footer"><div class="nav-footer"><div class="nav-footer-center"><div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/drscotthawley/boopiter/issues/new" class="toc-action"><i class="bi bi-github"></i>Report an issue</a></li></ul></div></div></div></footer><script>
+(function () {
+  var SUN = '<svg class="boop-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M5.64,17l-.71.71a1,1,0,0,0,0,1.41,1,1,0,0,0,1.41,0l.71-.71A1,1,0,0,0,5.64,17ZM5,12a1,1,0,0,0-1-1H3a1,1,0,0,0,0,2H4A1,1,0,0,0,5,12Zm7-7a1,1,0,0,0,1-1V3a1,1,0,0,0-2,0V4A1,1,0,0,0,12,5ZM5.64,7.05a1,1,0,0,0,.7.29,1,1,0,0,0,.71-.29,1,1,0,0,0,0-1.41l-.71-.71A1,1,0,0,0,4.93,6.34Zm12,.29a1,1,0,0,0,.7-.29l.71-.71a1,1,0,1,0-1.41-1.41L17,5.64a1,1,0,0,0,0,1.41A1,1,0,0,0,17.66,7.34ZM21,11H20a1,1,0,0,0,0,2h1a1,1,0,0,0,0-2Zm-9,8a1,1,0,0,0-1,1v1a1,1,0,0,0,2,0V20A1,1,0,0,0,12,19ZM18.36,17A1,1,0,0,0,17,18.36l.71.71a1,1,0,0,0,1.41,0,1,1,0,0,0,0-1.41ZM12,6.5A5.5,5.5,0,1,0,17.5,12,5.51,5.51,0,0,0,12,6.5Zm0,9A3.5,3.5,0,1,1,15.5,12,3.5,3.5,0,0,1,12,15.5Z"/></svg>';
+  var MOON = '<svg class="boop-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.64,13a1,1,0,0,0-1.05-.14,8.05,8.05,0,0,1-3.37.73A8.15,8.15,0,0,1,9.08,5.49a8.59,8.59,0,0,1,.25-2A1,1,0,0,0,8,2.36,10.14,10.14,0,1,0,22,14.05,1,1,0,0,0,21.64,13Zm-9.5,6.69A8.14,8.14,0,0,1,7.08,5.22v.27A10.15,10.15,0,0,0,17.22,15.63a9.79,9.79,0,0,0,2.1-.22A8.11,8.11,0,0,1,12.14,19.73Z"/></svg>';
+  function boopify() {
+    document.querySelectorAll('.quarto-color-scheme-toggle').forEach(function (t) {
+      if (t.dataset.boopified) return;
+      t.dataset.boopified = '1';
+      t.innerHTML = SUN + MOON;
+    });
+  }
+  boopify();                                             // toggle is server-rendered, usually already present
+  document.addEventListener('DOMContentLoaded', boopify); // ...but also catch a floated-in one
+})();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    // Ensure there is a toggle, if there isn't float one in the top right
+    if (window.document.querySelector('.quarto-color-scheme-toggle') === null) {
+      const a = window.document.createElement('a');
+      a.classList.add('top-right');
+      a.classList.add('quarto-color-scheme-toggle');
+      a.href = "";
+      a.onclick = function() { try { window.quartoToggleColorScheme(); } catch {} return false; };
+      const i = window.document.createElement("i");
+      i.classList.add('bi');
+      a.appendChild(i);
+      window.document.body.appendChild(a);
+    }
+    setColorSchemeToggle(hasAlternateSentinel())
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/drscotthawley\.github\.io\/boopiter");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+ <!-- /content -->
+
+
+
+
+</body></html>
