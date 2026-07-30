@@ -92,7 +92,7 @@ def _gh_owner() -> str:
     return r.stdout.strip()
 
 def _write_project_config(proc:Path, out:Path) -> None:
-    "Write the share site's _quarto.yml from the docs build's generated one, adjusting only what genuinely differs. Deliberately NOT hand-written: theme, highlight styles, css and include-after-body all have to match the docs site, and the only way they stay matched is by being the same file. What changes: nbdev's pre/post-render steps (they build apilist/llms.txt for the full site), the sidebar and search (they index pages that aren't here), and sidebar.yml (generated per-site, absent from _proc). `drafts: unlinked` is what makes an unlisted share work -- Quarto still renders a draft page, it just keeps it out of listings and the sitemap, so the URL works but nothing points at it."
+    "Write the share site's _quarto.yml from the docs build's generated one, adjusting only what genuinely differs. Deliberately NOT hand-written: theme, highlight styles, css and include-after-body all have to match the docs site, and the only way they stay matched is by being the same file. What changes: nbdev's pre/post-render steps (they build apilist/llms.txt for the full site), the sidebar and search (they index pages that aren't here), and sidebar.yml (generated per-site, absent from _proc). `draft-mode: unlinked` is what makes an unlisted share work -- Quarto still renders a draft page, it just keeps it out of listings and the sitemap, so the URL works but nothing points at it. The mode has to be set explicitly, and under this exact key: `drafts` is a list of *input paths* to treat as drafts, so setting it to 'unlinked' names a document that doesn't exist and quietly leaves the mode alone -- and the unset default is `gone`, which renders the page as an empty <html></html> shell. That was the bug behind unlisted shares publishing as a blank page; the schema takes a bare string for `drafts` happily, so nothing complained."
     import yaml
     cfg = yaml.safe_load((proc/'_quarto.yml').read_text())
     proj = cfg.setdefault('project', {})
@@ -105,7 +105,7 @@ def _write_project_config(proc:Path, out:Path) -> None:
     cfg.pop('metadata-files', None)
     site = cfg.setdefault('website', {})
     site['sidebar'] = False
-    site['drafts'] = 'unlinked'          # unlisted shares: rendered and reachable, absent from the listing
+    site['draft-mode'] = 'unlinked'      # unlisted shares: rendered and reachable, absent from the listing
     site['title'] = 'boops'
     site.pop('site-url', None)           # inherited from nbdev.yml and would point at the docs site
     nav = site.setdefault('navbar', {})
@@ -262,7 +262,7 @@ def _write_share(nb_path, listed:bool, images_dir=None) -> str:
     # share, so name it after the notebook instead.
     if not titles: meta['title'] = Path(nb_path).stem
     if desc: meta['description'] = desc
-    if not listed: meta['draft'] = True         # see 'drafts: unlinked' in _write_project_config
+    if not listed: meta['draft'] = True         # see 'draft-mode: unlinked' in _write_project_config
     # Dumped rather than hand-formatted: a description is arbitrary prose and can hold quotes, colons
     # or backticks that would otherwise need escaping by hand to stay valid YAML.
     (d/'_metadata.yml').write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True))
